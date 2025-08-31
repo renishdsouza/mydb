@@ -2,6 +2,8 @@
 
 #include <stdlib.h>
 #include <cstring>
+#include <iostream>
+using namespace std;
 
 OpenRelTable::OpenRelTable(){
 
