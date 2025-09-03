@@ -109,11 +109,11 @@ RecId BlockAccess::linearSearch(int relId, char attrName[ATTR_SIZE], union Attri
         */
         if (
             (op == NE && cmpVal != 0) || // if op is "not equal to"
-            (op == LT && cmpVal < 0) ||  // if op is "less than"
-            (op == LE && cmpVal <= 0) || // if op is "less than or equal to"
+            (op == LT && cmpVal > 0) ||  // if op is "less than"
+            (op == LE && cmpVal >= 0) || // if op is "less than or equal to"
             (op == EQ && cmpVal == 0) || // if op is "equal to"
-            (op == GT && cmpVal > 0) ||  // if op is "greater than"
-            (op == GE && cmpVal >= 0)    // if op is "greater than or equal to"
+            (op == GT && cmpVal < 0) ||  // if op is "greater than"
+            (op == GE && cmpVal <= 0)    // if op is "greater than or equal to"
         )
         {
             /*
