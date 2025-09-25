@@ -143,6 +143,7 @@ int OpenRelTable::openRel(char relName[ATTR_SIZE])
     // relcatRecId stores the rec-id of the relation `relName` in the Relation Catalog.
     Attribute check_relname;
     strcpy(check_relname.sVal, relName);
+    // TODO's: Get this dynamically from RELCAT's ATTRCAT
     char def_RELCAT_ATTR_RELNAME[16] = "RelName";
     RecId relcatRecId = BlockAccess::linearSearch(RELCAT_RELID, def_RELCAT_ATTR_RELNAME, check_relname, EQ);
 
@@ -185,6 +186,8 @@ int OpenRelTable::openRel(char relName[ATTR_SIZE])
     attribute of the relation relName by multiple calls of BlockAccess::linearSearch()
     care should be taken to reset the searchIndex of the relation, ATTRCAT_RELID,
     corresponding to Attribute Catalog before the first call to linearSearch().*/
+
+    // TODO's: Get this dynamically from ATTRCAT's ATTRCAT
     char def_ATTRCAT_ATTR_RELNAME[16] = "RelName";
     RelCacheTable::resetSearchIndex(ATTRCAT_RELID);
     for (int i = 0; i < totalAttrs; i++)
@@ -243,10 +246,27 @@ int OpenRelTable::closeRel(int relId)
     // allocated in the OpenRelTable::openRel() function
     if (RelCacheTable::relCache[relId] != nullptr)
     {
+        if (RelCacheTable::relCache[relId]->dirty)
+        {
+
+            /* Get the Relation Catalog entry from RelCacheTable::relCache
+            Then convert it to a record using RelCacheTable::relCatEntryToRecord(). */
+            RelCatEntry relCatEntry = RelCacheTable::relCache[relId]->relCatEntry;
+            union Attribute record[RELCAT_NO_ATTRS];
+            RelCacheTable::relCatEntryToRecord(&relCatEntry, record);
+
+            // declaring an object of RecBuffer class to write back to the buffer
+            RecBuffer relCatBlock(RelCacheTable::relCache[relId]->recId.block);
+
+            // Write back to the buffer using relCatBlock.setRecord() with recId.slot
+            relCatBlock.setRecord(record, RelCacheTable::relCache[relId]->recId.slot);
+        }
         free(RelCacheTable::relCache[relId]);
     }
 
-    AttrCacheEntry *head = AttrCacheTable::attrCache[relId], *temp = nullptr;
+    // we will do write back in subsequent stages
+    AttrCacheEntry *head = AttrCacheTable::attrCache[relId];
+    AttrCacheEntry *temp = nullptr;
     while (head != nullptr)
     {
         temp = head;
