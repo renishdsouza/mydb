@@ -21,7 +21,7 @@ StaticBuffer::StaticBuffer()
 
     for (int i = 0; i < DISK_BLOCKS; i++)
     {
-        printf("%d ", blockAllocMap[i]);
+        // printf("%d ", blockAllocMap[i]);
     }
     // initialise all blocks as free
     for (int bufferIndex = 0; bufferIndex < BUFFER_CAPACITY; bufferIndex++)
