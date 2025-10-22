@@ -1,0 +1,3005 @@
+diff --git a/disk b/disk
+new file mode 100644
+index 0000000..b15edc5
+Binary files /dev/null and b/disk differ
+diff --git a/mynitcbase/Algebra/Algebra.cpp b/mynitcbase/Algebra/Algebra.cpp
+index 9cc289b..3b84c06 100644
+--- a/mynitcbase/Algebra/Algebra.cpp
++++ b/mynitcbase/Algebra/Algebra.cpp
+@@ -113,10 +113,10 @@ int Algebra::select(char srcRel[ATTR_SIZE], char targetRel[ATTR_SIZE], char attr
+     /* If opening fails, delete the target relation by calling Schema::deleteRel()
+        and return the error value returned from openRel() */
+     int targetRelId = OpenRelTable::openRel(targetRel);
+-    if (targetRelId == E_CACHEFULL)
++    if (targetRelId < 0 || targetRelId >= MAX_OPEN)
+     {
+         Schema::deleteRel(targetRel);
+-        return E_CACHEFULL;
++        return targetRelId;
+     }
+ 
+     /*** Selecting and inserting records into the target relation ***/
+@@ -167,7 +167,9 @@ int Algebra::insert(char relName[ATTR_SIZE], int nAttrs, char record[][ATTR_SIZE
+     // if relName is equal to "RELATIONCAT" or "ATTRIBUTECAT"
+     // return E_NOTPERMITTED;
+     // Get these dynamically from the schema
+-    if (strcmp(relName, "RELATIONCAT") == 0 || strcmp(relName, "ATTRIBUTECAT") == 0)
++    if (
++        strcmp(relName, (char *)RELCAT_RELNAME) == 0 ||
++        strcmp(relName, (char *)ATTRCAT_RELNAME) == 0)
+     {
+         return E_NOTPERMITTED;
+     }
+@@ -244,9 +246,7 @@ int Algebra::insert(char relName[ATTR_SIZE], int nAttrs, char record[][ATTR_SIZE
+ 
+     // insert the record by calling BlockAccess::insert() function
+     // let retVal denote the return value of insert call
+-    int retVal = BlockAccess::insert(relId, recordValues);
+-
+-    return retVal;
++    return BlockAccess::insert(relId, recordValues);
+ }
+ 
+ int Algebra::project(char srcRel[ATTR_SIZE], char targetRel[ATTR_SIZE])
+@@ -304,10 +304,10 @@ int Algebra::project(char srcRel[ATTR_SIZE], char targetRel[ATTR_SIZE])
+ 
+     // If opening fails, delete the target relation by calling Schema::deleteRel() of
+     // return the error value returned from openRel().
+-    if (targetRelId == E_CACHEFULL)
++    if (targetRelId < 0 || targetRelId >= MAX_OPEN)
+     {
+         Schema::deleteRel(targetRel);
+-        return E_CACHEFULL;
++        return targetRelId;
+     }
+ 
+     /*** Inserting projected records into the target relation ***/
+@@ -415,7 +415,7 @@ int Algebra::project(char srcRel[ATTR_SIZE], char targetRel[ATTR_SIZE], int tar_
+     {
+         AttrCatEntry attrCatEntry;
+         ret = AttrCacheTable::getAttrCatEntry(srcRelId, tar_Attrs[i], &attrCatEntry);
+-        if (ret != E_ATTREXIST)
++        if (ret != SUCCESS)
+         {
+             Schema::closeRel(targetRel);
+             Schema::deleteRel(targetRel);
+diff --git a/mynitcbase/BPlusTree/BPlusTree.cpp b/mynitcbase/BPlusTree/BPlusTree.cpp
+index 64d3265..50fb717 100644
+--- a/mynitcbase/BPlusTree/BPlusTree.cpp
++++ b/mynitcbase/BPlusTree/BPlusTree.cpp
+@@ -10,12 +10,12 @@ RecId BPlusTree::bPlusSearch(int relId, char attrName[ATTR_SIZE], Attribute attr
+ 
+     /* get the search index corresponding to attribute with name attrName
+        using AttrCacheTable::getSearchIndex(). */
+-    int ret = AttrCacheTable::getSearchIndex(relId, attrName, &searchIndex);
++    AttrCacheTable::getSearchIndex(relId, attrName, &searchIndex);
+ 
+     AttrCatEntry attrCatEntry;
+     /* load the attribute cache entry into attrCatEntry using
+      AttrCacheTable::getAttrCatEntry(). */
+-    ret = AttrCacheTable::getAttrCatEntry(relId, attrName, &attrCatEntry);
++    AttrCacheTable::getAttrCatEntry(relId, attrName, &attrCatEntry);
+     int type = attrCatEntry.attrType; // Point 1
+ 
+     // declare variables block and index which will be used during search
+@@ -240,3 +240,621 @@ RecId BPlusTree::bPlusSearch(int relId, char attrName[ATTR_SIZE], Attribute attr
+     return RecId{-1, -1};
+ }
+ 
++int BPlusTree::bPlusCreate(int relId, char attrName[ATTR_SIZE])
++{
++    // if relId is either RELCAT_RELID or ATTRCAT_RELID:
++    //     return E_NOTPERMITTED;
++    cout << "Creating Index : " << endl;
++    if (relId == RELCAT_RELID || relId == ATTRCAT_RELID)
++    {
++        return E_NOTPERMITTED;
++    }
++
++    // get the attribute catalog entry of attribute `attrName`
++    // using AttrCacheTable::getAttrCatEntry()
++    AttrCatEntry attrCatEntry;
++    int ret = AttrCacheTable::getAttrCatEntry(relId, attrName, &attrCatEntry);
++
++    if (ret != SUCCESS)
++    {
++        return ret;
++    }
++
++    // if getAttrCatEntry fails
++    //     return the error code from getAttrCatEntry
++
++    if (attrCatEntry.rootBlock != -1)
++    {
++        // (B+ Tree already exists for the attribute)
++        cout << "Already Relation Exists : " << endl;
++        return SUCCESS;
++    }
++
++    /******Creating a new B+ Tree ******/
++
++    // get a free leaf block using constructor 1 to allocate a new block
++    IndLeaf rootBlockBuf;
++
++    // (if the block could not be allocated, the appropriate error code
++    //  will be stored in the blockNum member field of the object)
++
++    // declare rootBlock to store the blockNumber of the new leaf block
++    int rootBlock = rootBlockBuf.getBlockNum();
++
++    // if there is no more disk space for creating an index
++    if (rootBlock == E_DISKFULL)
++    {
++        return E_DISKFULL;
++    }
++    attrCatEntry.rootBlock = rootBlock;
++    AttrCacheTable::setAttrCatEntry(relId, attrName, &attrCatEntry);
++
++    RelCatEntry relCatEntry;
++
++    // load the relation catalog entry into relCatEntry
++    // using RelCacheTable::getRelCatEntry().
++    ret = RelCacheTable::getRelCatEntry(relId, &relCatEntry);
++    if (ret != SUCCESS)
++    {
++        return ret;
++    }
++
++    int block = relCatEntry.firstBlk;
++    /***** Traverse all the blocks in the relation and insert them one
++           by one into the B+ Tree *****/
++    while (block != -1)
++    {
++
++        // declare a RecBuffer object for `block` (using appropriate constructor)
++        cout << "Block Number and Slot of Record : " << block << " ";
++        RecBuffer recBuf(block);
++
++        unsigned char slotMap[relCatEntry.numSlotsPerBlk];
++
++        // load the slot map into slotMap using RecBuffer::getSlotMap().
++        recBuf.getSlotMap(slotMap);
++
++        // for every occupied slot of the block
++        for (int slot = 0; slot < relCatEntry.numSlotsPerBlk; slot++)
++        {
++            if (slotMap[slot] == SLOT_UNOCCUPIED)
++            {
++                // (slot is empty)
++                continue;
++            }
++            cout << slot << endl;
++            Attribute record[relCatEntry.numAttrs];
++            // load the record corresponding to the slot into `record`
++            // using RecBuffer::getRecord().
++            recBuf.getRecord(record, slot);
++
++            // declare recId and store the rec-id of this record in it
++            // RecId recId{block, slot};
++            RecId recId{block, slot};
++
++            // insert the attribute value corresponding to attrName from the record
++            // into the B+ tree using bPlusInsert.
++            // (note that bPlusInsert will destroy any existing bplus tree if
++            // insert fails i.e when disk is full)
++            // retVal = bPlusInsert(relId, attrName, attribute value, recId);
++            int retVal = bPlusInsert(relId, attrName, record[attrCatEntry.offset], recId);
++
++            // if (retVal == E_DISKFULL) {
++            //     // (unable to get enough blocks to build the B+ Tree.)
++            //     return E_DISKFULL;
++            // }
++            if (retVal == E_DISKFULL)
++            {
++                return E_DISKFULL;
++            }
++        }
++
++        // get the header of the block using BlockBuffer::getHeader()
++        HeadInfo headInfo;
++        recBuf.getHeader(&headInfo);
++
++        // set block = rblock of current block (from the header)
++        block = headInfo.rblock;
++        cout << "\n\n";
++    }
++
++    return SUCCESS;
++}
++
++int BPlusTree::bPlusDestroy(int rootBlockNum)
++{
++    if (rootBlockNum < 0 || rootBlockNum >= DISK_BLOCKS)
++    {
++        return E_OUTOFBOUND;
++    }
++
++    int type = StaticBuffer::getStaticBlockType(rootBlockNum);
++
++    if (type == IND_LEAF)
++    {
++        // declare an instance of IndLeaf for rootBlockNum using appropriate
++        // constructor
++        IndLeaf leaf(rootBlockNum);
++
++        // release the block using BlockBuffer::releaseBlock().
++        leaf.releaseBlock();
++        return SUCCESS;
++    }
++    else if (type == IND_INTERNAL)
++    {
++        // declare an instance of IndInternal for rootBlockNum using appropriate
++        // constructor
++        IndInternal internalBlk(rootBlockNum);
++
++        // load the header of the block using BlockBuffer::getHeader().
++        HeadInfo headInfo;
++        internalBlk.getHeader(&headInfo);
++
++        /*iterate through all the entries of the internalBlk and destroy the lChild
++        of the first entry and rChild of all entries using BPlusTree::bPlusDestroy().
++        (the rchild of an entry is the same as the lchild of the next entry.
++         take care not to delete overlapping children more than once ) */
++        InternalEntry entry;
++        internalBlk.getEntry(&entry, 0);
++        if (entry.lChild != -1)
++        {
++            int ret = bPlusDestroy(entry.lChild);
++            if (ret != SUCCESS)
++            {
++                return ret;
++            }
++        }
++
++        for (int i = 0; i < headInfo.numEntries; i++)
++        {
++            internalBlk.getEntry(&entry, i);
++            if (entry.rChild != -1)
++            {
++                int ret = bPlusDestroy(entry.rChild);
++                if (ret != SUCCESS)
++                {
++                    return ret;
++                }
++            }
++            bPlusDestroy(entry.rChild);
++        }
++
++        // release the block using BlockBuffer::releaseBlock().
++        internalBlk.releaseBlock();
++
++        return SUCCESS;
++    }
++    else
++    {
++        // (block is not an index block.)
++        return E_INVALIDBLOCK;
++    }
++}
++
++int BPlusTree::bPlusInsert(int relId, char attrName[ATTR_SIZE], Attribute attrVal, RecId recId)
++{
++    // get the attribute cache entry corresponding to attrName
++    // using AttrCacheTable::getAttrCatEntry().
++    AttrCatEntry attrCatEntry;
++    int ret = AttrCacheTable::getAttrCatEntry(relId, attrName, &attrCatEntry);
++
++    // if getAttrCatEntry() failed
++    //     return the error code
++    if (ret != SUCCESS)
++    {
++        return ret;
++    }
++
++    int blockNum = attrCatEntry.rootBlock;
++
++    if (blockNum == -1)
++    {
++        return E_NOINDEX;
++    }
++
++    // find the leaf block to which insertion is to be done using the
++    // findLeafToInsert() function
++
++    int leafBlkNum = findLeafToInsert(blockNum, attrVal, attrCatEntry.attrType);
++    // insert the attrVal and recId to the leaf block at blockNum using the
++    // insertIntoLeaf() function.
++    // declare a struct Index with attrVal = attrVal, block = recId.block and
++    // slot = recId.slot to pass as argument to the function.
++    // insertIntoLeaf(relId, attrName, leafBlkNum, Index entry)
++    // NOTE: the insertIntoLeaf() function will propagate the insertion to the
++    //       required internal nodes by calling the required helper functions
++    //       like insertIntoInternal() or createNewRoot()
++    Index entry;
++    entry.attrVal = attrVal;
++    entry.block = recId.block;
++    entry.slot = recId.slot;
++
++    ret = insertIntoLeaf(relId, attrName, leafBlkNum, entry);
++    if (ret == E_DISKFULL)
++    {
++        // destroy the existing B+ tree by passing the rootBlock to bPlusDestroy().
++        bPlusDestroy(blockNum);
++
++        // update the rootBlock of attribute catalog cache entry to -1 using
++        // AttrCacheTable::setAttrCatEntry().
++        attrCatEntry.rootBlock = -1;
++        AttrCacheTable::setAttrCatEntry(relId, attrName, &attrCatEntry);
++
++        return E_DISKFULL;
++    }
++
++    return SUCCESS;
++}
++
++int BPlusTree::findLeafToInsert(int rootBlock, Attribute attrVal, int attrType)
++{
++    int blockNum = rootBlock;
++    while (StaticBuffer::getStaticBlockType(blockNum) != IND_LEAF)
++    {
++
++        IndInternal intBlock(blockNum);
++
++        HeadInfo intHeader;
++        intBlock.getHeader(&intHeader);
++
++        int numEntries = intHeader.numEntries;
++        InternalEntry intEntry;
++
++        int targetIndex = -1;
++        for (int i = 0; i < numEntries; i++)
++        {
++            intBlock.getEntry(&intEntry, i);
++
++            if (compareAttrs(intEntry.attrVal, attrVal, attrType) > 0)
++            {
++                targetIndex = i;
++                break;
++            }
++        }
++
++        if (targetIndex == -1)
++        {
++            intBlock.getEntry(&intEntry, numEntries - 1);
++            blockNum = intEntry.rChild;
++        }
++        else
++        {
++            intBlock.getEntry(&intEntry, targetIndex);
++            blockNum = intEntry.lChild;
++        }
++    }
++    printf("Attribute Value %s \n", attrVal.sVal);
++    cout << "Found Leaf to Insert() : Block " << blockNum << endl;
++    return blockNum;
++}
++
++int BPlusTree::insertIntoLeaf(int relId, char attrName[ATTR_SIZE], int blockNum, Index indexEntry)
++{
++    AttrCatEntry attrCatBuf;
++    AttrCacheTable::getAttrCatEntry(relId, attrName, &attrCatBuf);
++
++    IndLeaf leafBlock(blockNum);
++
++    HeadInfo leafHeader;
++    leafBlock.getHeader(&leafHeader);
++
++    int numEntries = leafHeader.numEntries;
++
++    Index indices[numEntries + 1];
++
++    int targetIndex = numEntries;
++    Index leafEntry;
++    for (int i = 0; i < numEntries; i++)
++    {
++        leafBlock.getEntry(&leafEntry, i);
++        if (compareAttrs(leafEntry.attrVal, indexEntry.attrVal, attrCatBuf.attrType) > 0)
++        {
++            targetIndex = i;
++            break;
++        }
++    }
++
++    for (int i = 0; i < targetIndex; i++)
++        leafBlock.getEntry(&indices[i], i);
++
++    indices[targetIndex] = indexEntry;
++
++    for (int i = targetIndex; i < numEntries; i++)
++        leafBlock.getEntry(&indices[i + 1], i);
++
++    if (numEntries != MAX_KEYS_LEAF)
++    {
++        leafHeader.numEntries++;
++        leafBlock.setHeader(&leafHeader);
++
++        for (int i = 0; i < leafHeader.numEntries; i++)
++            leafBlock.setEntry(&indices[i], i);
++        cout << " Inserted into Leaf of blockNum : " << blockNum << endl;
++
++        return SUCCESS;
++    }
++
++    int newRightBlock = splitLeaf(blockNum, indices);
++    if (newRightBlock == E_DISKFULL)
++        return newRightBlock;
++
++    if (leafHeader.pblock != -1)
++    {
++        InternalEntry intEntry;
++        intEntry.attrVal = indices[MIDDLE_INDEX_LEAF].attrVal;
++        intEntry.lChild = blockNum;
++        intEntry.rChild = newRightBlock;
++
++        return insertIntoInternal(relId, attrName, leafHeader.pblock, intEntry);
++    }
++    else
++    {
++        return createNewRoot(relId, attrName, indices[MIDDLE_INDEX_LEAF].attrVal, blockNum, newRightBlock);
++    }
++
++    return SUCCESS;
++}
++
++int BPlusTree::splitLeaf(int leafBlockNum, Index indices[])
++{
++    // declare rightBlk, an instance of IndLeaf using constructor 1 to obtain new
++    // leaf index block that will be used as the right block in the splitting
++    IndLeaf rightBlk;
++
++    // declare leftBlk, an instance of IndLeaf using constructor 2 to read from
++    // the existing leaf block
++    IndLeaf leftBlk(leafBlockNum);
++
++    int rightBlkNum = rightBlk.getBlockNum();
++    int leftBlkNum = leafBlockNum;
++
++    if (rightBlkNum == E_DISKFULL)
++    {
++        //(failed to obtain a new leaf index block because the disk is full)
++        return E_DISKFULL;
++    }
++
++    HeadInfo leftBlkHeader, rightBlkHeader;
++    // get the headers of left block and right block using BlockBuffer::getHeader()
++    leftBlk.getHeader(&leftBlkHeader);
++    rightBlk.getHeader(&rightBlkHeader);
++
++    // set rightBlkHeader with the following values
++    // - number of entries = (MAX_KEYS_LEAF+1)/2 = 32,
++    // - pblock = pblock of leftBlk
++    // - lblock = leftBlkNum
++    // - rblock = rblock of leftBlk
++    // and update the header of rightBlk using BlockBuffer::setHeader()
++    rightBlkHeader.numEntries = (MAX_KEYS_LEAF + 1) / 2;
++    rightBlkHeader.pblock = leftBlkHeader.pblock;
++    rightBlkHeader.lblock = leftBlkNum;
++    rightBlkHeader.rblock = leftBlkHeader.rblock;
++    rightBlk.setHeader(&rightBlkHeader);
++
++    // set leftBlkHeader with the following values
++    // - number of entries = (MAX_KEYS_LEAF+1)/2 = 32
++    // - rblock = rightBlkNum
++    // and update the header of leftBlk using BlockBuffer::setHeader() */
++    leftBlkHeader.numEntries = (MAX_KEYS_LEAF + 1) / 2;
++    leftBlkHeader.rblock = rightBlkNum;
++    leftBlk.setHeader(&leftBlkHeader);
++
++    // set the first 32 entries of leftBlk = the first 32 entries of indices array
++    // and set the first 32 entries of newRightBlk = the next 32 entries of
++    // indices array using IndLeaf::setEntry().
++    for (int i = 0; i < 32; i++)
++    {
++        leftBlk.setEntry(&indices[i], i);
++    }
++
++    for (int i = 32; i < 64; i++)
++    {
++        rightBlk.setEntry(&indices[i], i - 32);
++    }
++
++    return rightBlkNum;
++}
++
++int BPlusTree::insertIntoInternal(int relId, char attrName[ATTR_SIZE], int intBlockNum, InternalEntry intEntry)
++{
++    // get the attribute cache entry corresponding to attrName
++    // using AttrCacheTable::getAttrCatEntry().
++    AttrCatEntry attrCatBuf;
++    int ret = AttrCacheTable::getAttrCatEntry(relId, attrName, &attrCatBuf);
++    if (ret != SUCCESS)
++    {
++        return ret;
++    }
++
++    IndInternal intBlock(intBlockNum);
++
++    HeadInfo intHeader;
++    intBlock.getHeader(&intHeader);
++
++    InternalEntry intEntries[intHeader.numEntries + 1];
++
++    int targetIndex = intHeader.numEntries;
++    InternalEntry entryBuffer;
++    for (int i = 0; i < intHeader.numEntries; i++)
++    {
++        intBlock.getEntry(&entryBuffer, i);
++        if (compareAttrs(entryBuffer.attrVal, intEntry.attrVal, attrCatBuf.attrType) > 0)
++        {
++            targetIndex = i;
++            break;
++        }
++    }
++
++    for (int i = 0; i < targetIndex; i++)
++    {
++        intBlock.getEntry(&intEntries[i], i);
++    }
++
++    intEntries[targetIndex] = intEntry;
++
++    for (int i = targetIndex; i < intHeader.numEntries; i++)
++    {
++        intBlock.getEntry(&intEntries[i + 1], i);
++    }
++
++    if (targetIndex < intHeader.numEntries)
++    {
++        intEntries[targetIndex + 1].lChild = intEntries[targetIndex].rChild;
++    }
++
++    if (intHeader.numEntries != MAX_KEYS_INTERNAL)
++    {
++        intHeader.numEntries++;
++        intBlock.setHeader(&intHeader);
++
++        for (int i = 0; i < intHeader.numEntries; i++)
++        {
++            intBlock.setEntry(&intEntries[i], i);
++        }
++
++        return SUCCESS;
++    }
++
++    int newRightBlock = splitInternal(intBlockNum, intEntries);
++    if (newRightBlock == E_DISKFULL)
++    {
++        return E_DISKFULL;
++    }
++
++    if (intHeader.pblock != -1)
++    {
++        InternalEntry entryInParent;
++        entryInParent.attrVal = intEntries[MIDDLE_INDEX_INTERNAL].attrVal;
++        entryInParent.lChild = intBlockNum;
++        entryInParent.rChild = newRightBlock;
++
++        return insertIntoInternal(relId, attrName, intHeader.pblock, entryInParent);
++    }
++    else
++    {
++        return createNewRoot(relId, attrName, intEntries[MIDDLE_INDEX_INTERNAL].attrVal, intBlockNum, newRightBlock);
++    }
++
++    return SUCCESS;
++}
++
++int BPlusTree::splitInternal(int intBlockNum, InternalEntry internalEntries[])
++{
++    IndInternal rightBlock;
++    IndInternal leftBlock(intBlockNum);
++
++    int rightBlockNum = rightBlock.getBlockNum();
++    int leftBlockNum = intBlockNum;
++
++    if (rightBlockNum == E_DISKFULL)
++    {
++        return E_DISKFULL;
++    }
++
++    HeadInfo leftBlockHeader, rightBlockHeader;
++    leftBlock.getHeader(&leftBlockHeader);
++    rightBlock.getHeader(&rightBlockHeader);
++
++    rightBlockHeader.numEntries = (MAX_KEYS_INTERNAL / 2);
++    rightBlockHeader.pblock = leftBlockHeader.pblock;
++    rightBlock.setHeader(&rightBlockHeader);
++
++    leftBlockHeader.numEntries = (MAX_KEYS_INTERNAL / 2);
++    leftBlock.setHeader(&leftBlockHeader);
++
++    for (int i = 0; i < MIDDLE_INDEX_INTERNAL; i++)
++    {
++        leftBlock.setEntry(&internalEntries[i], i);
++    }
++
++    for (int i = MIDDLE_INDEX_INTERNAL + 1; i <= 100; i++)
++    {
++        rightBlock.setEntry(&internalEntries[i], i - MIDDLE_INDEX_INTERNAL - 1);
++    }
++
++    InternalEntry entryBuffer;
++    rightBlock.getEntry(&entryBuffer, 0);
++    BlockBuffer childBuffer(entryBuffer.lChild);
++    HeadInfo childHeader;
++    childBuffer.getHeader(&childHeader);
++    childHeader.pblock = rightBlockNum;
++    childBuffer.setHeader(&childHeader);
++
++    for (int i = 0; i < rightBlockHeader.numEntries; i++)
++    {
++        rightBlock.getEntry(&entryBuffer, i);
++        BlockBuffer childBuffer(entryBuffer.rChild);
++        HeadInfo childHeader;
++        childBuffer.getHeader(&childHeader);
++        childHeader.pblock = rightBlockNum;
++        childBuffer.setHeader(&childHeader);
++    }
++
++    return rightBlockNum;
++}
++
++int BPlusTree::createNewRoot(int relId, char attrName[ATTR_SIZE], Attribute attrVal, int lChild, int rChild)
++{
++    // get the attribute cache entry corresponding to attrName
++    // using AttrCacheTable::getAttrCatEntry().
++    AttrCatEntry attrCatEntry;
++    int ret = AttrCacheTable::getAttrCatEntry(relId, attrName, &attrCatEntry);
++
++    if (ret != SUCCESS)
++    {
++        return ret;
++    }
++    // declare newRootBlk, an instance of IndInternal using appropriate constructor
++    // to allocate a new internal index block on the disk
++    IndInternal newRootBlk;
++
++    int newRootBlkNum = newRootBlk.getBlockNum();
++
++    if (newRootBlkNum == E_DISKFULL)
++    {
++        bPlusDestroy(rChild);
++        bPlusDestroy(lChild);
++
++        return E_DISKFULL;
++    }
++
++    // update the header of the new block with numEntries = 1 using
++    // BlockBuffer::getHeader() and BlockBuffer::setHeader()
++    HeadInfo newRootBlkHeader;
++    newRootBlk.getHeader(&newRootBlkHeader);
++    newRootBlkHeader.numEntries = 1;
++    newRootBlk.setHeader(&newRootBlkHeader);
++
++    // create a struct InternalEntry with lChild, attrVal and rChild from the
++    // arguments and set it as the first entry in newRootBlk using IndInternal::setEntry()
++    InternalEntry newRootEntry;
++    newRootEntry.attrVal = attrVal;
++    newRootEntry.lChild = lChild;
++    newRootEntry.rChild = rChild;
++
++    newRootBlk.setEntry(&newRootEntry, 0);
++
++    // declare BlockBuffer instances for the `lChild` and `rChild` blocks using
++    // appropriate constructor and update the pblock of those blocks to `newRootBlkNum`
++    // using BlockBuffer::getHeader() and BlockBuffer::setHeader()
++    BlockBuffer lChildBlk(lChild);
++    BlockBuffer rChildBlk(rChild);
++
++    HeadInfo lChildHeader, rChildHeader;
++    lChildBlk.getHeader(&lChildHeader);
++    rChildBlk.getHeader(&rChildHeader);
++
++    lChildHeader.pblock = newRootBlkNum;
++    rChildHeader.pblock = newRootBlkNum;
++
++    lChildBlk.setHeader(&lChildHeader);
++    rChildBlk.setHeader(&rChildHeader);
++
++    // update rootBlock = newRootBlkNum for the entry corresponding to `attrName`
++    // in the attribute cache using AttrCacheTable::setAttrCatEntry().
++    attrCatEntry.rootBlock = newRootBlkNum;
++    AttrCacheTable::setAttrCatEntry(relId, attrName, &attrCatEntry);
++    cout << " Created new Root :" << newRootBlkNum << endl;
++    return SUCCESS;
++}
++
+diff --git a/mynitcbase/BlockAccess/BlockAccess.cpp b/mynitcbase/BlockAccess/BlockAccess.cpp
+index df73d52..1722d70 100644
+--- a/mynitcbase/BlockAccess/BlockAccess.cpp
++++ b/mynitcbase/BlockAccess/BlockAccess.cpp
+@@ -144,8 +144,7 @@ int BlockAccess::renameRelation(char oldName[ATTR_SIZE], char newName[ATTR_SIZE]
+ 
+     // search the relation catalog for an entry with "RelName" = newRelationName
+     // TODO : Get this dynamically
+-    char def_RELCAT_ATTR_RELNAME[16] = "RelName";
+-    RecId recId = linearSearch(RELCAT_RELID, def_RELCAT_ATTR_RELNAME, newRelationName, EQ);
++    RecId recId = linearSearch(RELCAT_RELID, (char *)RELCAT_ATTR_RELNAME, newRelationName, EQ);
+ 
+     // If relation with name newName already exists (result of linearSearch
+     //                                               is not {-1, -1})
+@@ -164,7 +163,7 @@ int BlockAccess::renameRelation(char oldName[ATTR_SIZE], char newName[ATTR_SIZE]
+ 
+     strcpy(oldRelationName.sVal, oldName);
+     // search the relation catalog for an entry with "RelName" = oldRelationName
+-    recId = linearSearch(RELCAT_RELID, def_RELCAT_ATTR_RELNAME, oldRelationName, EQ);
++    recId = linearSearch(RELCAT_RELID, (char *)RELCAT_ATTR_RELNAME, oldRelationName, EQ);
+ 
+     // If relation with name oldName does not exist (result of linearSearch is {-1, -1})
+     //    return E_RELNOTEXIST;
+@@ -204,11 +203,10 @@ int BlockAccess::renameRelation(char oldName[ATTR_SIZE], char newName[ATTR_SIZE]
+     //     update the relName field in the record to newName
+     //     set back the record using RecBuffer.setRecord
+     // TODO : Get this dynamically
+-    char def_ATTRCAT_ATTR_RELNAME[16] = "RelName";
+     int numAttrs = record[RELCAT_NO_ATTRIBUTES_INDEX].nVal;
+     for (int i = 0; i < numAttrs; i++)
+     {
+-        recId = linearSearch(ATTRCAT_RELID, def_ATTRCAT_ATTR_RELNAME, oldRelationName, EQ);
++        recId = linearSearch(ATTRCAT_RELID, (char *)ATTRCAT_ATTR_RELNAME, oldRelationName, EQ);
+         RecBuffer recBuffer(recId.block);
+         recBuffer.getRecord(record, recId.slot);
+         strcpy(record[ATTRCAT_REL_NAME_INDEX].sVal, newName);
+@@ -231,8 +229,7 @@ int BlockAccess::renameAttribute(char relName[ATTR_SIZE], char oldName[ATTR_SIZE
+     // Search for the relation with name relName in relation catalog using linearSearch()
+     // If relation with name relName does not exist (search returns {-1,-1})
+     //    return E_RELNOTEXIST;
+-    char def_RELCAT_ATTR_RELNAME[16] = "RelName";
+-    RecId recId = linearSearch(RELCAT_RELID, def_RELCAT_ATTR_RELNAME, relNameAttr, EQ);
++    RecId recId = linearSearch(RELCAT_RELID, (char *)RELCAT_ATTR_RELNAME, relNameAttr, EQ);
+ 
+     if (recId.block == -1 && recId.slot == -1)
+     {
+@@ -250,15 +247,13 @@ int BlockAccess::renameAttribute(char relName[ATTR_SIZE], char oldName[ATTR_SIZE
+ 
+     /* iterate over all Attribute Catalog Entry record corresponding to the
+        relation to find the required attribute */
+-    // TODO : Get this dynamically
+-    char def_ATTRCAT_ATTR_RELNAME[16] = "RelName";
+     while (true)
+     {
+         // linear search on the attribute catalog for RelName = relNameAttr
+         // get the record using RecBuffer.getRecord
+         // if the attribute name is oldName, set attrToRenameRecId to block and slot of this record
+ 
+-        RecId recId = linearSearch(ATTRCAT_RELID, def_ATTRCAT_ATTR_RELNAME, relNameAttr, EQ);
++        RecId recId = linearSearch(ATTRCAT_RELID, (char *)ATTRCAT_ATTR_RELNAME, relNameAttr, EQ);
+ 
+         // if there are no more attributes left to check (linearSearch returned {-1,-1})
+         //     break;
+@@ -271,7 +266,6 @@ int BlockAccess::renameAttribute(char relName[ATTR_SIZE], char oldName[ATTR_SIZE
+           into attrCatEntryRecord */
+         RecBuffer recBuffer(recId.block);
+         recBuffer.getRecord(attrCatEntryRecord, recId.slot);
+-        printf(" %s - block \n", attrCatEntryRecord[0].sVal);
+ 
+         // if attrCatEntryRecord.attrName = oldName
+         //     attrToRenameRecId = block and slot of this record
+@@ -310,187 +304,127 @@ int BlockAccess::renameAttribute(char relName[ATTR_SIZE], char oldName[ATTR_SIZE
+ 
+ int BlockAccess::insert(int relId, Attribute *record)
+ {
+-    // get the relation catalog entry from relation cache
+-    // ( use RelCacheTable::getRelCatEntry() of Cache Layer)
+-    RelCatEntry relCatEntry;
+-    RelCacheTable::getRelCatEntry(relId, &relCatEntry);
++    RelCatEntry relCatBuf;
++    int ret = RelCacheTable::getRelCatEntry(relId, &relCatBuf);
+ 
+-    int blockNum = relCatEntry.firstBlk;
++    if (ret != SUCCESS)
++        return ret;
+ 
+-    // rec_id will be used to store where the new record will be inserted
+-    RecId rec_id = {-1, -1};
++    int blockNum = relCatBuf.firstBlk;
+ 
+-    int numOfSlots = relCatEntry.numSlotsPerBlk;
+-    int numOfAttributes = relCatEntry.numAttrs;
++    RecId recId = {-1, -1};
++
++    int numSlots = relCatBuf.numSlotsPerBlk;
++    int numAttrs = relCatBuf.numAttrs;
+ 
+     int prevBlockNum = -1;
+ 
+-    /*
+-        Traversing the linked list of existing record blocks of the relation
+-        until a free slot is found OR
+-        until the end of the list is reached
+-    */
+     while (blockNum != -1)
+     {
+-        // create a RecBuffer object for blockNum (using appropriate constructor!)
+-        RecBuffer recBuffer(blockNum);
++        RecBuffer currentBlock(blockNum);
+ 
+-        // get header of block(blockNum) using RecBuffer::getHeader() function
+-        struct HeadInfo header;
+-        recBuffer.getHeader(&header);
++        HeadInfo currentHeader;
++        currentBlock.getHeader(&currentHeader);
+ 
+-        // get slot map of block(blockNum) using RecBuffer::getSlotMap() function
+-        unsigned char slotMap[header.numSlots];
+-        recBuffer.getSlotMap(slotMap);
++        unsigned char slotMap[numSlots];
++        currentBlock.getSlotMap(slotMap);
+ 
+-        // search for free slot in the block 'blockNum' and store it's rec-id in rec_id
+-        // (Free slot can be found by iterating over the slot map of the block)
+-        /* slot map stores SLOT_UNOCCUPIED if slot is free and
+-           SLOT_OCCUPIED if slot is occupied) */
+-        for (int i = 0; i < header.numSlots; i++)
++        int freeSlot = -1;
++        for (int i = 0; i < numSlots; i++)
+         {
+             if (slotMap[i] == SLOT_UNOCCUPIED)
+             {
+-                rec_id = RecId{blockNum, i};
++                freeSlot = i;
+                 break;
+             }
+         }
+ 
+-        /* if a free slot is found, set rec_id and discontinue the traversal
+-           of the linked list of record blocks (break from the loop) */
++        if (freeSlot != -1)
++        {
++            recId.block = blockNum;
++            recId.slot = freeSlot;
++            break;
++        }
+ 
+-        /* otherwise, continue to check the next block by updating the
+-           block numbers as follows:
+-              update prevBlockNum = blockNum
+-              update blockNum = header.rblock (next element in the linked
+-                                               list of record blocks)
+-        */
+         prevBlockNum = blockNum;
+-        blockNum = header.rblock;
++        blockNum = currentHeader.rblock;
+     }
+ 
+-    //  if no free slot is found in existing record blocks (rec_id = {-1, -1})
+-    if (rec_id.block == -1 && rec_id.slot == -1)
++    if (recId.block == -1 || recId.slot == -1)
+     {
+-        // if relation is RELCAT, do not allocate any more blocks
+-        //     return E_MAXRELATIONS;
+         if (relId == RELCAT_RELID)
+-        {
+             return E_MAXRELATIONS;
+-        }
+ 
+-        // Otherwise,
+-        // get a new record block (using the appropriate RecBuffer constructor!)
+-        // get the block number of the newly allocated block
+-        // (use BlockBuffer::getBlockNum() function)
+-        // let ret be the return value of getBlockNum() function call
+-        RecBuffer recBuffer;
+-        int ret = recBuffer.getBlockNum(); // In this function we are already assigning a header to the block
+-
+-        if (ret == E_DISKFULL)
+-        {
+-            return E_DISKFULL;
+-        }
++        RecBuffer newBlock;
+ 
+-        // Assign rec_id.block = new block number(i.e. ret) and rec_id.slot = 0
+-        rec_id.block = ret;
+-        rec_id.slot = 0;
++        int newBlockNum = newBlock.getBlockNum();
+ 
+-        /*
+-            set the header of the new record block such that it links with
+-            existing record blocks of the relation
+-            set the block's header as follows:
+-            blockType: REC, pblock: -1
+-            lblock
+-                  = -1 (if linked list of existing record blocks was empty
+-                         i.e this is the first insertion into the relation)
+-                  = prevBlockNum (otherwise),
+-            rblock: -1, numEntries: 0,
+-            numSlots: numOfSlots, numAttrs: numOfAttributes
+-            (use BlockBuffer::setHeader() function)
+-        */
++        if (newBlockNum == E_DISKFULL)
++            return E_DISKFULL;
+ 
+-        // set the block type of the new block to REC
+-        struct HeadInfo header;
+-        header.blockType = REC;
+-        header.pblock = -1;
+-        header.lblock = prevBlockNum;
+-        header.rblock = -1;
+-        header.numEntries = 0;
+-        header.numAttrs = numOfAttributes;
+-        header.numSlots = numOfSlots;
+-        recBuffer.setHeader(&header);
++        recId.block = newBlockNum;
++        recId.slot = 0;
+ 
+-        recBuffer.getHeader(&header);
++        HeadInfo newBlockHeader;
++        newBlock.getHeader(&newBlockHeader);
++        newBlockHeader.lblock = prevBlockNum;
++        newBlockHeader.numAttrs = numAttrs;
++        newBlockHeader.numSlots = numSlots;
++        newBlock.setHeader(&newBlockHeader);
+ 
+-        /*
+-            set block's slot map with all slots marked as free
+-            (i.e. store SLOT_UNOCCUPIED for all the entries)
+-            (use RecBuffer::setSlotMap() function)
+-        */
+-        unsigned char slotMap[numOfSlots];
+-        memset(slotMap, SLOT_UNOCCUPIED, numOfSlots);
+-        recBuffer.setSlotMap(slotMap);
++        unsigned char newBlockSlotMap[numSlots];
++        newBlock.getSlotMap(newBlockSlotMap);
++        for (int i = 0; i < numSlots; i++)
++            newBlockSlotMap[i] = SLOT_UNOCCUPIED;
++        newBlock.setSlotMap(newBlockSlotMap);
+ 
+-        // if prevBlockNum != -1
+         if (prevBlockNum != -1)
+         {
+-            // create a RecBuffer object for prevBlockNum
+-            // get the header of the block prevBlockNum and
+-            // update the rblock field of the header to the new block
+-            // number i.e. rec_id.block
+-            // (use BlockBuffer::setHeader() function)
+-
+-            RecBuffer recBuffer(prevBlockNum);
+-            recBuffer.getHeader(&header);
+-            header.rblock = rec_id.block;
+-            recBuffer.setHeader(&header);
++            RecBuffer prevBlock(prevBlockNum);
++
++            HeadInfo prevBlockHeader;
++            prevBlock.getHeader(&prevBlockHeader);
++            prevBlockHeader.rblock = recId.block;
++            prevBlock.setHeader(&prevBlockHeader);
+         }
+         else
+         {
+-            // update first block field in the relation catalog entry to the
+-            // new block (using RelCacheTable::setRelCatEntry() function)
+-
+-            relCatEntry.firstBlk = rec_id.block;
+-            RelCacheTable::setRelCatEntry(relId, &relCatEntry);
++            relCatBuf.firstBlk = recId.block;
++            relCatBuf.lastBlk = recId.block;
++            RelCacheTable::setRelCatEntry(relId, &relCatBuf);
+         }
+-
+-        // update last block field in the relation catalog entry to the
+-        // new block (using RelCacheTable::setRelCatEntry() function)
+-        relCatEntry.lastBlk = rec_id.block;
+-        RelCacheTable::setRelCatEntry(relId, &relCatEntry);
+     }
+ 
+-    // create a RecBuffer object for rec_id.block
+-    // insert the record into rec_id'th slot using RecBuffer.setRecord())
+-    RecBuffer recBuffer(rec_id.block);
+-    recBuffer.setRecord(record, rec_id.slot);
++    RecBuffer blockToInsert(recId.block);
++    blockToInsert.setRecord(record, recId.slot);
+ 
+-    /* update the slot map of the block by marking entry of the slot to
+-       which record was inserted as occupied) */
+-    // (ie store SLOT_OCCUPIED in free_slot'th entry of slot map)
+-    // (use RecBuffer::getSlotMap() and RecBuffer::setSlotMap() functions)
++    unsigned char slotMapToInsert[numSlots];
++    blockToInsert.getSlotMap(slotMapToInsert);
++    slotMapToInsert[recId.slot] = SLOT_OCCUPIED;
++    blockToInsert.setSlotMap(slotMapToInsert);
+ 
+-    unsigned char slotMap[relCatEntry.numSlotsPerBlk];
+-    recBuffer.getSlotMap(slotMap);
+-    slotMap[rec_id.slot] = SLOT_OCCUPIED;
+-    recBuffer.setSlotMap(slotMap);
++    HeadInfo headerToInsert;
++    blockToInsert.getHeader(&headerToInsert);
++    headerToInsert.numEntries++;
++    blockToInsert.setHeader(&headerToInsert);
+ 
+-    // increment the numEntries field in the header of the block to
+-    // which record was inserted
+-    // (use BlockBuffer::getHeader() and BlockBuffer::setHeader() functions)
+-    struct HeadInfo header;
+-    recBuffer.getHeader(&header);
+-    header.numEntries++;
+-    recBuffer.setHeader(&header);
++    relCatBuf.numRecs++;
++    RelCacheTable::setRelCatEntry(relId, &relCatBuf);
+ 
+-    // Increment the number of records field in the relation cache entry for
+-    // the relation. (use RelCacheTable::setRelCatEntry function)
++    int flag = SUCCESS;
++    for (int attrOffset = 0; attrOffset < numAttrs; attrOffset++)
++    {
++        AttrCatEntry attrCatBuf;
++        AttrCacheTable::getAttrCatEntry(relId, attrOffset, &attrCatBuf);
++        if (attrCatBuf.rootBlock == -1)
++            continue;
+ 
+-    relCatEntry.numRecs++;
+-    RelCacheTable::setRelCatEntry(relId, &relCatEntry);
++        int ret = BPlusTree::bPlusInsert(relId, attrCatBuf.attrName, record[attrOffset], recId);
++        if (ret == E_DISKFULL)
++            flag = E_INDEX_BLOCKS_RELEASED;
++    }
+ 
+-    return SUCCESS;
++    return flag;
+ }
+ 
+ /*
+@@ -509,7 +443,7 @@ int BlockAccess::search(int relId, Attribute *record, char attrName[ATTR_SIZE],
+     int ret = AttrCacheTable::getAttrCatEntry(relId, attrName, &attrCatEntry);
+ 
+     // if this call returns an error, return the appropriate error code
+-    if (ret != E_ATTREXIST)
++    if (ret != SUCCESS)
+     {
+         return ret;
+     }
+@@ -558,218 +492,126 @@ int BlockAccess::search(int relId, Attribute *record, char attrName[ATTR_SIZE],
+ 
+ int BlockAccess::deleteRelation(char relName[ATTR_SIZE])
+ {
+-    // if the relation to delete is either Relation Catalog or Attribute Catalog,
+-    //     return E_NOTPERMITTED
+-    // (check if the relation names are either "RELATIONCAT" and "ATTRIBUTECAT".
+-    // you may use the following constants: RELCAT_NAME and ATTRCAT_NAME)
+-    if (strcmp(relName, "RELATIONCAT") == 0 || strcmp(relName, "ATTRIBUTECAT") == 0)
++    if (
++        strcmp(relName, (char *)RELCAT_RELNAME) == 0 ||
++        strcmp(relName, (char *)ATTRCAT_RELNAME) == 0)
+     {
+         return E_NOTPERMITTED;
+     }
+ 
+-    /* reset the searchIndex of the relation catalog using
+-       RelCacheTable::resetSearchIndex() */
+     RelCacheTable::resetSearchIndex(RELCAT_RELID);
+ 
+-    Attribute relNameAttr; // (stores relName as type union Attribute)
+-    // assign relNameAttr.sVal = relName
+-    strcpy(relNameAttr.sVal, relName);
++    Attribute relNameAttribute;
++    strcpy(relNameAttribute.sVal, relName);
+ 
+-    //  linearSearch on the relation catalog for RelName = relNameAttr
+-    char def_RELCAT_ATTR_RELNAME[16] = "RelName";
+-    RecId recId = linearSearch(RELCAT_RELID, def_RELCAT_ATTR_RELNAME, relNameAttr, EQ);
++    RecId recId = linearSearch(RELCAT_RELID, (char *)RELCAT_ATTR_RELNAME, relNameAttribute, EQ);
+ 
+-    // if the relation does not exist (linearSearch returned {-1, -1})
+-    //     return E_RELNOTEXIST
+-    if (recId.block == -1 && recId.slot == -1)
+-    {
++    if (recId.block == -1 || recId.slot == -1)
+         return E_RELNOTEXIST;
+-    }
+ 
+     Attribute relCatEntryRecord[RELCAT_NO_ATTRS];
+-    /* store the relation catalog record corresponding to the relation in
+-       relCatEntryRecord using RecBuffer.getRecord */
+-    RecBuffer recBufferRELCAT(RELCAT_BLOCK);
+-    int ret = recBufferRELCAT.getRecord(relCatEntryRecord, recId.slot);
+-    if (ret != SUCCESS)
+-    {
+-        return ret;
+-    }
+ 
+-    /* get the first record block of the relation (firstBlock) using the
+-       relation catalog entry record */
+-    /* get the number of attributes corresponding to the relation (numAttrs)
+-       using the relation catalog entry record */
+-    int firstBlock = relCatEntryRecord[RELCAT_FIRST_BLOCK_INDEX].nVal;
+-    int numAttrs = relCatEntryRecord[RELCAT_NO_ATTRIBUTES_INDEX].nVal;
++    RecBuffer recBuffer(recId.block);
++    recBuffer.getRecord(relCatEntryRecord, recId.slot);
+ 
+-    /*
+-     Delete all the record blocks of the relation
+-    */
+-    // for each record block of the relation:
+-    //     get block header using BlockBuffer.getHeader
+-    //     get the next block from the header (rblock)
+-    //     release the block using BlockBuffer.releaseBlock
+-    //
+-    //     Hint: to know if we reached the end, check if nextBlock = -1
+-    int block = firstBlock;
+-    while (block != -1)
++    int currentBlock = relCatEntryRecord[RELCAT_FIRST_BLOCK_INDEX].nVal;
++
++    while (currentBlock != -1)
+     {
+-        RecBuffer recBuffer(block);
+-        struct HeadInfo header;
+-        recBuffer.getHeader(&header);
+-        int nextBlock = header.rblock;
+-        recBuffer.releaseBlock();
+-        block = nextBlock;
+-    }
++        RecBuffer currentBlockBuffer(currentBlock);
++        HeadInfo currentBlockHeader;
++        currentBlockBuffer.getHeader(&currentBlockHeader);
+ 
+-    /***
+-        Deleting attribute catalog entries corresponding the relation and index
+-        blocks corresponding to the relation with relName on its attributes
+-    ***/
++        int nextBlock = currentBlockHeader.rblock;
+ 
+-    // reset the searchIndex of the attribute catalog
+-    RelCacheTable::resetSearchIndex(ATTRCAT_RELID);
++        currentBlockBuffer.releaseBlock();
++        currentBlock = nextBlock;
++    }
+ 
+-    int numberOfAttributesDeleted = 0;
+-    char def_ATTRCAT_ATTR_RELNAME[16] = "RelName";
++    int numAttrsDeleted = 0;
++    RelCacheTable::resetSearchIndex(ATTRCAT_RELID);
+     while (true)
+     {
+-        RecId attrCatRecId;
+-        // attrCatRecId = linearSearch on attribute catalog for RelName = relNameAttr
+-        attrCatRecId = linearSearch(ATTRCAT_RELID, def_ATTRCAT_ATTR_RELNAME, relNameAttr, EQ);
++        RecId attrCatRecId = linearSearch(ATTRCAT_RELID, (char *)ATTRCAT_ATTR_RELNAME, relNameAttribute, EQ);
+ 
+-        // if no more attributes to iterate over (attrCatRecId == {-1, -1})
+-        //     break;
+-        if (attrCatRecId.block == -1 && attrCatRecId.slot == -1)
+-        {
++        if (attrCatRecId.slot == -1 || attrCatRecId.block == -1)
+             break;
+-        }
+ 
+-        numberOfAttributesDeleted++;
++        numAttrsDeleted++;
+ 
+-        // create a RecBuffer for attrCatRecId.block
+-        // get the header of the block
+-        // get the record corresponding to attrCatRecId.slot
+-        RecBuffer recBuffer(attrCatRecId.block);
+-        struct HeadInfo header;
+-        recBuffer.getHeader(&header);
+-        Attribute record[header.numAttrs];
+-        recBuffer.getRecord(record, attrCatRecId.slot);
++        RecBuffer currentBlock(attrCatRecId.block);
++
++        HeadInfo currentBlockHeader;
++        currentBlock.getHeader(&currentBlockHeader);
++
++        Attribute record[ATTRCAT_NO_ATTRS];
++        currentBlock.getRecord(record, attrCatRecId.slot);
+ 
+-        // declare variable rootBlock which will be used to store the root
+-        // block field from the attribute catalog record.
+         int rootBlock = record[ATTRCAT_ROOT_BLOCK_INDEX].nVal;
+-        // (This will be used later to delete any indexes if it exists)
+ 
+-        // Update the Slotmap for the block by setting the slot as SLOT_UNOCCUPIED
+-        // Hint: use RecBuffer.getSlotMap and RecBuffer.setSlotMap
+-        unsigned char slotMap[header.numSlots];
+-        recBuffer.getSlotMap(slotMap);
++        unsigned char slotMap[currentBlockHeader.numSlots];
++
++        currentBlock.getSlotMap(slotMap);
+         slotMap[attrCatRecId.slot] = SLOT_UNOCCUPIED;
+-        recBuffer.setSlotMap(slotMap);
++        currentBlock.setSlotMap(slotMap);
+ 
+-        /* Decrement the numEntries in the header of the block corresponding to
+-           the attribute catalog entry and then set back the header
+-           using RecBuffer.setHeader */
+-        header.numEntries--;
+-        recBuffer.setHeader(&header);
++        currentBlockHeader.numEntries--;
++        currentBlock.setHeader(&currentBlockHeader);
+ 
+-        /* If number of entries become 0, releaseBlock is called after fixing
+-           the linked list.
+-        */
+-        if (header.numEntries == 0)
++        if (currentBlockHeader.numEntries == 0)
+         {
+-            /* Standard Linked List Delete for a Block
+-               Get the header of the left block and set it's rblock to this
+-               block's rblock
+-            */
+-            RecBuffer recBufferLBlock(header.lblock);
+-            struct HeadInfo lblockHeader;
+-            recBufferLBlock.getHeader(&lblockHeader);
+-            lblockHeader.rblock = header.rblock;
+-            recBufferLBlock.setHeader(&lblockHeader);
+-            // create a RecBuffer for lblock and call appropriate methods
+-
+-            if (header.rblock != -1)
++            int leftBlock = currentBlockHeader.lblock;
++            int rightBlock = currentBlockHeader.rblock;
++
++            if (leftBlock != -1)
+             {
+-                /* Get the header of the right block and set it's lblock to
+-                   this block's lblock */
+-                // create a RecBuffer for rblock and call appropriate methods
+-                RecBuffer recBufferRBlock(header.rblock);
+-                struct HeadInfo rblockHeader;
+-                recBufferRBlock.getHeader(&rblockHeader);
+-                rblockHeader.lblock = header.lblock;
+-                recBufferRBlock.setHeader(&rblockHeader);
++                RecBuffer prevBlock(leftBlock);
++                HeadInfo prevBlockHeader;
++
++                prevBlock.getHeader(&prevBlockHeader);
++                prevBlockHeader.rblock = rightBlock;
++                prevBlock.setHeader(&prevBlockHeader);
+             }
+-            else
++
++            if (rightBlock != -1)
+             {
+-                // (the block being released is the "Last Block" of the relation.)
+-                /* update the Relation Catalog entry's LastBlock field for this
+-                   relation with the block number of the previous block. */
+-
+-                // get the relation catalog entry from the relation cache
+-                // ( use RelCacheTable::getRelCatEntry() of Cache Layer)
+-                RelCatEntry relCatEntry;
+-                RelCacheTable::getRelCatEntry(ATTRCAT_RELID, &relCatEntry);
+-                relCatEntry.lastBlk = header.lblock;
+-                RelCacheTable::setRelCatEntry(ATTRCAT_RELID, &relCatEntry);
+-            }
++                RecBuffer nextBlock(rightBlock);
++                HeadInfo nextBlockHeader;
+ 
+-            // (Since the attribute catalog will never be empty(why?), we do not
+-            //  need to handle the case of the linked list becoming empty - i.e
+-            //  every block of the attribute catalog gets released.)
++                nextBlock.getHeader(&nextBlockHeader);
++                nextBlockHeader.lblock = leftBlock;
++                nextBlock.setHeader(&nextBlockHeader);
++            }
+ 
+-            // call releaseBlock()
+-            recBuffer.releaseBlock();
++            currentBlock.releaseBlock();
+         }
+ 
+-        // (the following part is only relevant once indexing has been implemented)
+-        // if index exists for the attribute (rootBlock != -1), call bplus destroy
++        // condition to handle b+ trees
+         if (rootBlock != -1)
+-        {
+-            // delete the bplus tree rooted at rootBlock using BPlusTree::bPlusDestroy()
+-            // BPlusTree::bPlusDestroy(rootBlock);
+-        }
++            BPlusTree::bPlusDestroy(rootBlock);
+     }
+ 
+-    /*** Delete the entry corresponding to the relation from relation catalog ***/
+-    // Fetch the header of Relcat block
+-    struct HeadInfo header;
+-    recBufferRELCAT.getHeader(&header);
+-
+-    /* Decrement the numEntries in the header of the block corresponding to the
+-       relation catalog entry and set it back */
+-    header.numEntries--;
+-    recBufferRELCAT.setHeader(&header);
+-    /* Get the slotmap in relation catalog, update it by marking the slot as
+-       free(SLOT_UNOCCUPIED) and set it back. */
+-    unsigned char slotMap[header.numSlots];
+-    recBufferRELCAT.getSlotMap(slotMap);
+-    slotMap[recId.slot] = SLOT_UNOCCUPIED;
+-    recBufferRELCAT.setSlotMap(slotMap);
+-
+-    /*** Updating the Relation Cache Table ***/
+-    /** Update relation catalog record entry (number of records in relation
+-        catalog is decreased by 1) **/
+-    // Get the entry corresponding to relation catalog from the relation
+-    // cache and update the number of records and set it back
+-    // (using RelCacheTable::setRelCatEntry() function)
+-    RelCatEntry relCatEntry;
+-    RelCacheTable::getRelCatEntry(RELCAT_RELID, &relCatEntry);
+-    relCatEntry.numRecs--;
+-    RelCacheTable::setRelCatEntry(RELCAT_RELID, &relCatEntry);
+-
+-    /** Update attribute catalog entry (number of records in attribute catalog
+-        is decreased by numberOfAttributesDeleted) **/
+-    // i.e., #Records = #Records - numberOfAttributesDeleted
+-    // Get the entry corresponding to attribute catalog from the relation
+-    // cache and update the number of records and set it back
+-    // (using RelCacheTable::setRelCatEntry() function)
+-
+-    RelCacheTable::getRelCatEntry(ATTRCAT_RELID, &relCatEntry);
+-    relCatEntry.numRecs -= numberOfAttributesDeleted;
+-    RelCacheTable::setRelCatEntry(ATTRCAT_RELID, &relCatEntry);
++    HeadInfo relCatHeader;
++    recBuffer.getHeader(&relCatHeader);
++
++    unsigned char recSlotMap[relCatHeader.numSlots];
++
++    recBuffer.getSlotMap(recSlotMap);
++    recSlotMap[recId.slot] = SLOT_UNOCCUPIED;
++    recBuffer.setSlotMap(recSlotMap);
++
++    relCatHeader.numEntries--;
++    recBuffer.setHeader(&relCatHeader);
++
++    RelCatEntry relCatBuf;
++    RelCacheTable::getRelCatEntry(RELCAT_RELID, &relCatBuf);
++    relCatBuf.numRecs--;
++    RelCacheTable::setRelCatEntry(RELCAT_RELID, &relCatBuf);
++
++    RelCatEntry attrCatBuf;
++    RelCacheTable::getRelCatEntry(ATTRCAT_RELID, &attrCatBuf);
++    attrCatBuf.numRecs -= numAttrsDeleted;
++    RelCacheTable::setRelCatEntry(ATTRCAT_RELID, &attrCatBuf);
+ 
+     return SUCCESS;
+ }
+diff --git a/mynitcbase/Buffer/BlockBuffer.cpp b/mynitcbase/Buffer/BlockBuffer.cpp
+index ffafbd8..44579f9 100644
+--- a/mynitcbase/Buffer/BlockBuffer.cpp
++++ b/mynitcbase/Buffer/BlockBuffer.cpp
+@@ -15,16 +15,28 @@ BlockBuffer::BlockBuffer(int blockNum)
+ 
+ BlockBuffer::BlockBuffer(char blockType)
+ {
+-    // allocate a block on the disk and a buffer in memory to hold the new block of
+-    // given type using getFreeBlock function and get the return error codes if any.
+-
+-    // set the blockNum field of the object to that of the allocated block
+-    // number if the method returned a valid block number,
+-    // otherwise set the error code returned as the block number.
+-    this->blockNum = getFreeBlock(blockType);
++    int blockTypeNum;
++    if (blockType == 'R')
++    {
++        blockTypeNum = REC;
++    }
++    else if (blockType == 'I')
++    {
++        blockTypeNum = IND_INTERNAL;
++    }
++    else if (blockType == 'L')
++    {
++        blockTypeNum = IND_LEAF;
++    }
++    else
++    {
++        blockTypeNum = UNUSED_BLK;
++    }
++    int blockNum = getFreeBlock(blockTypeNum);
+ 
+-    // (The caller must check if the constructor allocatted block successfully
+-    // by checking the value of block number field.)
++    this->blockNum = blockNum;
++    if (blockNum < 0 || blockNum >= DISK_BLOCKS)
++        return;
+ }
+ 
+ // calls the parent class constructor
+@@ -71,55 +83,36 @@ int BlockBuffer::getHeader(struct HeadInfo *head)
+         return ret; // return any errors that might have occured in the process
+     }
+ 
+-    // populate the numEntries, numAttrs and numSlots fields in *head
+-    memcpy(&head->numSlots, bufferPtr + 24, 4);
+-    memcpy(&head->numEntries, bufferPtr + 16, 4);
+-    memcpy(&head->numAttrs, bufferPtr + 20, 4);
+-    memcpy(&head->rblock, bufferPtr + 12, 4);
+-    memcpy(&head->lblock, bufferPtr + 8, 4);
++    HeadInfo *header = (HeadInfo *)bufferPtr;
++
++    head->numSlots = header->numSlots;
++    head->numEntries = header->numEntries;
++    head->numAttrs = header->numAttrs;
++    head->lblock = header->lblock;
++    head->rblock = header->rblock;
++    head->pblock = header->pblock;
+ 
+     return SUCCESS;
+ }
+ 
+ int BlockBuffer::setHeader(struct HeadInfo *head)
+ {
+-    // Flag: Who exactly is calling this function? Will the header contain total information
+     unsigned char *bufferPtr;
+-    // get the starting address of the buffer containing the block using
+-    // loadBlockAndGetBufferPtr(&bufferPtr).
+     int ret = loadBlockAndGetBufferPtr(&bufferPtr);
+ 
+-    // if loadBlockAndGetBufferPtr(&bufferPtr) != SUCCESS
+-    // return the value returned by the call.
+     if (ret != SUCCESS)
+-    {
+         return ret;
+-    }
+ 
+-    // cast bufferPtr to type HeadInfo*
+-    struct HeadInfo *bufferHeader = (struct HeadInfo *)bufferPtr;
++    HeadInfo *header = (HeadInfo *)bufferPtr;
+ 
+-    // copy the fields of the HeadInfo pointed to by head (except reserved) to
+-    // the header of the block (pointed to by bufferHeader)
+-    //(hint: bufferHeader->numSlots = head->numSlots )
+-    bufferHeader->blockType = head->blockType;
+-    bufferHeader->lblock = head->lblock;
+-    bufferHeader->rblock = head->rblock;
+-    bufferHeader->numEntries = head->numEntries;
+-    bufferHeader->numAttrs = head->numAttrs;
+-    bufferHeader->numSlots = head->numSlots;
+-    bufferHeader->pblock = head->pblock;
++    header->numSlots = head->numSlots;
++    header->numEntries = head->numEntries;
++    header->numAttrs = head->numAttrs;
++    header->lblock = head->lblock;
++    header->rblock = head->rblock;
++    header->pblock = head->pblock;
+ 
+-    // update dirty bit by calling StaticBuffer::setDirtyBit()
+-    // if setDirtyBit() failed, return the error code
+-    ret = StaticBuffer::setDirtyBit(this->blockNum);
+-    if (ret != SUCCESS)
+-    {
+-        return ret;
+-    }
+-
+-    // return SUCCESS;
+-    return SUCCESS;
++    return StaticBuffer::setDirtyBit(this->blockNum);
+ }
+ 
+ // load the record at slotNum into the argument pointer
+@@ -226,42 +219,32 @@ NOTE: this function expects the caller to allocate memory for the argument
+    buffer due to LRU buffer replacement. So, it will need to be bought back
+    to the buffer before any operations can be done.
+  */
+-int BlockBuffer::loadBlockAndGetBufferPtr(unsigned char **buffPtr)
++int BlockBuffer::loadBlockAndGetBufferPtr(unsigned char **bufferPtr)
+ {
+-    /* check whether the block is already present in the buffer
+-       using StaticBuffer.getBufferNum() */
+     int bufferNum = StaticBuffer::getBufferNum(this->blockNum);
+ 
+-    // if present (!=E_BLOCKNOTINBUFFER),
+-    // set the timestamp of the corresponding buffer to 0 and increment the
+-    // timestamps of all other occupied buffers in BufferMetaInfo.
+-    if (bufferNum != E_BLOCKNOTINBUFFER)
++    if (bufferNum == E_BLOCKNOTINBUFFER)
+     {
+-        StaticBuffer::metainfo[bufferNum].timeStamp = 0;
+-        for (int i = 0; i < BUFFER_CAPACITY; i++)
+-        {
+-            if (StaticBuffer::metainfo[i].free == false)
+-            {
+-                StaticBuffer::metainfo[i].timeStamp++;
+-            }
+-        }
++        bufferNum = StaticBuffer::getFreeBuffer(this->blockNum);
++
++        if (bufferNum == E_OUTOFBOUND)
++            return E_OUTOFBOUND;
++
++        Disk::readBlock(StaticBuffer::blocks[bufferNum], this->blockNum);
+     }
+     else
+     {
+-        // if not present
+-        // get a free buffer using StaticBuffer.getFreeBuffer()
+-        // if the call returns E_OUTOFBOUND, return E_OUTOFBOUND here as
+-        // the blockNum is invalid
+-        // Read the block into the free buffer using readBlock()
+-        bufferNum = StaticBuffer::getFreeBuffer(this->blockNum);
+-        if (bufferNum == E_OUTOFBOUND)
++        for (int i = 0; i < BUFFER_CAPACITY; i++)
+         {
+-            return E_OUTOFBOUND;
++            if (!StaticBuffer::metainfo[i].free)
++                StaticBuffer::metainfo[i].timeStamp++;
+         }
+-        Disk::readBlock(StaticBuffer::blocks[bufferNum], this->blockNum);
++
++        StaticBuffer::metainfo[bufferNum].timeStamp = 0;
+     }
+-    *buffPtr = StaticBuffer::blocks[bufferNum];
+-    // return SUCCESS;
++
++    *bufferPtr = StaticBuffer::blocks[bufferNum];
++
+     return SUCCESS;
+ }
+ /* used to get the slotmap from a record block
+@@ -280,7 +263,7 @@ int RecBuffer::getSlotMap(unsigned char *slotMap)
+ 
+     struct HeadInfo head;
+     // get the header of the block using getHeader() function
+-    this->getHeader(&head);
++    ret = BlockBuffer::getHeader(&head);
+ 
+     int slotCount = head.numSlots;
+ 
+@@ -321,115 +304,68 @@ int RecBuffer::setSlotMap(unsigned char *slotMap)
+ 
+     // update dirty bit using StaticBuffer::setDirtyBit
+     // if setDirtyBit failed, return the value returned by the call
+-    ret = StaticBuffer::setDirtyBit(this->blockNum);
+-    if (ret != SUCCESS)
+-    {
+-        return ret;
+-    }
+-
+-    // return SUCCESS
+-    return SUCCESS;
++    return StaticBuffer::setDirtyBit(this->blockNum);
+ }
+ 
+-int BlockBuffer::getFreeBlock(char blockType)
++int BlockBuffer::getFreeBlock(int blockType)
+ {
+-    // TODO: Cross check whether blockType is char or int
+-    //  iterate through the StaticBuffer::blockAllocMap and find the block number
+-    //  of a free block in the disk.
+-    int blockNumber = -1;
+-    int type = 0;
++    int freeBlock = -1;
+     for (int i = 0; i < DISK_BLOCKS; i++)
+     {
+         if (StaticBuffer::blockAllocMap[i] == UNUSED_BLK)
+         {
+-            blockNumber = i;
+-            if (blockType == 'R')
+-                StaticBuffer::blockAllocMap[i] = REC;
+-            else if (blockType == 'I')
+-                StaticBuffer::blockAllocMap[i] = IND_INTERNAL;
+-            else if (blockType == 'L')
+-                StaticBuffer::blockAllocMap[i] = IND_LEAF;
+-            else if (blockType == 'B')
+-                StaticBuffer::blockAllocMap[i] = BMAP;
+-            else if (blockType == 'D')
+-                StaticBuffer::blockAllocMap[i] = UNUSED_BLK;
+-            type = StaticBuffer::blockAllocMap[i];
++            freeBlock = i;
+             break;
+         }
+     }
+ 
+-    // if no block is free, return E_DISKFULL.
+-    if (blockNumber == -1)
++    if (freeBlock == -1)
+     {
+         return E_DISKFULL;
+     }
+ 
+-    // set the object's blockNum to the block number of the free block.
+-    this->blockNum = blockNumber;
++    this->blockNum = freeBlock;
+ 
+-    // find a free buffer using StaticBuffer::getFreeBuffer() .
+-    int bufferNum = StaticBuffer::getFreeBuffer(blockNumber);
++    int freeBuffer = StaticBuffer::getFreeBuffer(freeBlock);
+ 
+-    // initialize the header of the block passing a struct HeadInfo with values
+-    // pblock: -1, lblock: -1, rblock: -1, numEntries: 0, numAttrs: 0, numSlots: 0
+-    // to the setHeader() function.
+-    struct HeadInfo head;
+-    head.blockType = type;
+-    head.pblock = -1;
+-    head.lblock = -1;
+-    head.rblock = -1;
+-    head.numEntries = 0;
+-    head.numAttrs = 0;
+-    head.numSlots = 0;
+-    this->setHeader(&head);
+-
+-    // update the block type of the block to the input block type using setBlockType().
+-    // this->setBlockType(blockType);
+-
+-    // return block number of the free block.
+-    return blockNumber;
++    HeadInfo header;
++    header.pblock = -1;
++    header.lblock = -1;
++    header.rblock = -1;
++    header.numEntries = 0;
++    header.numAttrs = 0;
++    header.numSlots = 0;
++
++    this->setHeader(&header);
++    this->setBlockType(blockType);
++
++    return freeBlock;
+ }
+ 
+ void BlockBuffer::releaseBlock()
+ {
+ 
+-    // if blockNum is INVALID_BLOCKNUM (-1), or it is invalidated already, do nothing
+-    if (this->blockNum == INVALID_BLOCKNUM)
++    if (blockNum < 0 || blockNum >= DISK_BLOCKS || StaticBuffer::blockAllocMap[blockNum] == UNUSED_BLK)
+     {
+         return;
+     }
+ 
+-    // else
+-    /* get the buffer number of the buffer assigned to the block
+-       using StaticBuffer::getBufferNum().
+-       (this function return E_BLOCKNOTINBUFFER if the block is not
+-       currently loaded in the buffer)
+-        */
+-    int bufferNum = StaticBuffer::getBufferNum(this->blockNum);
+-
+-    // if the block is present in the buffer, free the buffer
+-    // by setting the free flag of its StaticBuffer::tableMetaInfo entry
+-    // to true.
++    int bufferNum = StaticBuffer::getBufferNum(blockNum);
+ 
+-    if (bufferNum != E_BLOCKNOTINBUFFER)
++    if (bufferNum == E_BLOCKNOTINBUFFER)
+     {
+-        StaticBuffer::metainfo[bufferNum].free = true;
++        return;
+     }
+ 
+-    // free the block in disk by setting the data type of the entry
+-    // corresponding to the block number in StaticBuffer::blockAllocMap
+-    // to UNUSED_BLK.
+-    StaticBuffer::blockAllocMap[this->blockNum] = UNUSED_BLK;
++    StaticBuffer::metainfo[bufferNum].free = true;
++
++    StaticBuffer::blockAllocMap[blockNum] = UNUSED_BLK;
+ 
+-    // set the object's blockNum to INVALID_BLOCK (-1)
+     this->blockNum = INVALID_BLOCKNUM;
+ }
+ 
+ int compareAttrs(union Attribute attr1, union Attribute attr2, int attrType)
+ {
+-    static int cou=0;
+-    cou++;
+-    cout<<cou<<endl;
+ 
+     double diff;
+     if (attrType == STRING)
+@@ -517,7 +453,11 @@ int IndLeaf::getEntry(void *ptr, int indexNum)
+     /* the indexNum'th entry will begin at an offset of
+        HEADER_SIZE + (indexNum * LEAF_ENTRY_SIZE)  from bufferPtr */
+     unsigned char *entryPtr = bufferPtr + HEADER_SIZE + (indexNum * LEAF_ENTRY_SIZE);
+-    memcpy((struct Index *)ptr, entryPtr, LEAF_ENTRY_SIZE);
++    // memcpy((struct Index *)ptr, entryPtr, LEAF_ENTRY_SIZE);
++    struct Index *index = (struct Index *)ptr;
++    memcpy(&(index->attrVal), entryPtr, sizeof(Attribute));
++    memcpy(&(index->block), entryPtr + 16, 4);
++    memcpy(&(index->slot), entryPtr + 20, 4);
+ 
+     // return SUCCESS
+     return SUCCESS;
+@@ -525,10 +465,108 @@ int IndLeaf::getEntry(void *ptr, int indexNum)
+ 
+ int IndInternal::setEntry(void *ptr, int indexNum)
+ {
+-    return 0;
+-}
++    // if the indexNum is not in the valid range of [0, MAX_KEYS_INTERNAL-1]
++    //     return E_OUTOFBOUND.
++    if (indexNum < 0 || indexNum >= MAX_KEYS_INTERNAL)
++    {
++        return E_OUTOFBOUND;
++    }
++
++    unsigned char *bufferPtr;
++    /* get the starting address of the buffer containing the block
++       using loadBlockAndGetBufferPtr(&bufferPtr). */
++    int ret = loadBlockAndGetBufferPtr(&bufferPtr);
++
++    // if loadBlockAndGetBufferPtr(&bufferPtr) != SUCCESS
++    //     return the value returned by the call.
++    if (ret != SUCCESS)
++    {
++        return ret;
++    }
+ 
++    // typecast the void pointer to an internal entry pointer
++    struct InternalEntry *internalEntry = (struct InternalEntry *)ptr;
++
++    /*
++    - copy the entries from *internalEntry to the indexNum`th entry
++    - make sure that each field is copied individually as in the following code
++    - the lChild and rChild fields of InternalEntry are of type int32_t
++    - int32_t is a type of int that is guaranteed to be 4 bytes across every
++      C++ implementation. sizeof(int32_t) = 4
++    */
++
++    /* the indexNum'th entry will begin at an offset of
++       HEADER_SIZE + (indexNum * (sizeof(int) + ATTR_SIZE) )         [why?]
++       from bufferPtr */
++
++    unsigned char *entryPtr = bufferPtr + HEADER_SIZE + (indexNum * 20);
++
++    memcpy(entryPtr, &(internalEntry->lChild), 4);
++    memcpy(entryPtr + 4, &(internalEntry->attrVal), ATTR_SIZE);
++    memcpy(entryPtr + 20, &(internalEntry->rChild), 4);
++
++    // update dirty bit using setDirtyBit()
++    // if setDirtyBit failed, return the value returned by the call
++    return StaticBuffer::setDirtyBit(this->blockNum);
++}
+ int IndLeaf::setEntry(void *ptr, int indexNum)
+ {
+-    return 0;
++    // if the indexNum is not in the valid range of [0, MAX_KEYS_LEAF-1]
++    //     return E_OUTOFBOUND.
++    if (indexNum < 0 || indexNum >= MAX_KEYS_LEAF)
++        return E_OUTOFBOUND;
++
++    unsigned char *bufferPtr;
++    /* get the starting address of the buffer containing the block
++       using loadBlockAndGetBufferPtr(&bufferPtr). */
++    int ret = loadBlockAndGetBufferPtr(&bufferPtr);
++
++    // if loadBlockAndGetBufferPtr(&bufferPtr) != SUCCESS
++    //     return the value returned by the call.
++    if (ret != SUCCESS)
++    {
++        return ret;
++    }
++
++    // copy the Index at ptr to indexNum'th entry in the buffer using memcpy
++
++    /* the indexNum'th entry will begin at an offset of
++       HEADER_SIZE + (indexNum * LEAF_ENTRY_SIZE)  from bufferPtr */
++    unsigned char *entryPtr = bufferPtr + HEADER_SIZE + (indexNum * LEAF_ENTRY_SIZE);
++    struct Index *index = (struct Index *)ptr;
++    memcpy(entryPtr, &(index->attrVal), sizeof(Attribute));
++    memcpy(entryPtr + 16, &(index->block), sizeof(int));
++    memcpy(entryPtr + 20, &(index->slot), sizeof(int));
++
++    // update dirty bit using setDirtyBit()
++    return StaticBuffer::setDirtyBit(this->blockNum);
++    // if setDirtyBit failed, return the value returned by the call
++}
++
++int BlockBuffer::setBlockType(int blockType)
++{
++
++    unsigned char *bufferPtr;
++    /* get the starting address of the buffer containing the block
++       using loadBlockAndGetBufferPtr(&bufferPtr). */
++    int ret = loadBlockAndGetBufferPtr(&bufferPtr);
++
++    // if loadBlockAndGetBufferPtr(&bufferPtr) != SUCCESS
++    // return the value returned by the call.
++    if (ret != SUCCESS)
++        return ret;
++
++    // store the input block type in the first 4 bytes of the buffer.
++    // (hint: cast bufferPtr to int32_t* and then assign it)
++    // *((int32_t *)bufferPtr) = blockType;
++    *((int32_t *)bufferPtr) = blockType;
++
++    // update the StaticBuffer::blockAllocMap entry corresponding to the
++    // object's block number to `blockType`.
++    StaticBuffer::blockAllocMap[this->blockNum] = blockType;
++
++    // update dirty bit by calling StaticBuffer::setDirtyBit()
++    // if setDirtyBit() failed
++    // return the returned value from the call
++    return StaticBuffer::setDirtyBit(this->blockNum);
+ }
+diff --git a/mynitcbase/Buffer/BlockBuffer.h b/mynitcbase/Buffer/BlockBuffer.h
+index 90c8230..d086a31 100644
+--- a/mynitcbase/Buffer/BlockBuffer.h
++++ b/mynitcbase/Buffer/BlockBuffer.h
+@@ -50,7 +50,7 @@ protected:
+   int blockNum;
+   // methods
+   int loadBlockAndGetBufferPtr(unsigned char **buffPtr);
+-  int getFreeBlock(char blockType);
++  int getFreeBlock(int blockType);
+   int setBlockType(int blockType);
+ 
+ public:
+diff --git a/mynitcbase/Buffer/StaticBuffer.cpp b/mynitcbase/Buffer/StaticBuffer.cpp
+index b37693e..b15a7fb 100644
+--- a/mynitcbase/Buffer/StaticBuffer.cpp
++++ b/mynitcbase/Buffer/StaticBuffer.cpp
+@@ -29,31 +29,6 @@ StaticBuffer::StaticBuffer()
+     }
+ }
+ 
+-// int StaticBuffer::getFreeBuffer(int blockNum)
+-// {
+-//     if (blockNum < 0 || blockNum > DISK_BLOCKS)
+-//     {
+-//         return E_OUTOFBOUND;
+-//     }
+-//     int allocatedBuffer;
+-
+-//     // iterate through all the blocks in the StaticBuffer
+-//     // find the first free block in the buffer (check metainfo)
+-//     // assign allocatedBuffer = index of the free block
+-//     for (allocatedBuffer = 0; allocatedBuffer < BUFFER_CAPACITY; allocatedBuffer++)
+-//     {
+-//         if (metainfo[allocatedBuffer].free)
+-//         {
+-//             break;
+-//         }
+-//     }
+-
+-//     metainfo[allocatedBuffer].free = false;
+-//     metainfo[allocatedBuffer].blockNum = blockNum;
+-
+-//     return allocatedBuffer;
+-// }
+-
+ /* Get the buffer index where a particular block is stored
+    or E_BLOCKNOTINBUFFER otherwise
+ */
+diff --git a/mynitcbase/Cache/AttrCacheTable.cpp b/mynitcbase/Cache/AttrCacheTable.cpp
+index ac260fe..5ff26ce 100644
+--- a/mynitcbase/Cache/AttrCacheTable.cpp
++++ b/mynitcbase/Cache/AttrCacheTable.cpp
+@@ -61,30 +61,81 @@ int AttrCacheTable::getAttrCatEntry(int relId, char attrName[ATTR_SIZE], AttrCat
+         if (strcmp(entry->attrCatEntry.attrName, attrName) == 0)
+         {
+             *attrCatBuf = entry->attrCatEntry;
+-            return E_ATTREXIST;
++            return SUCCESS;
+         }
+     }
+ 
+     // no attribute with name attrName for the relation
+     return E_ATTRNOTEXIST;
+ }
++int AttrCacheTable::setAttrCatEntry(int relId, char attrName[ATTR_SIZE], AttrCatEntry *attrCatBuf)
++{
++
++    if (relId < 0 || relId >= MAX_OPEN)
++    {
++        return E_OUTOFBOUND;
++    }
++
++    if (attrCache[relId] == nullptr)
++    {
++        return E_RELNOTOPEN;
++    }
++
++    for (AttrCacheEntry *entry = attrCache[relId]; entry != nullptr; entry = entry->next)
++    {
++        if (strcmp(entry->attrCatEntry.attrName, attrName) == 0)
++        {
++            // copy the attrCatBuf to the corresponding Attribute Catalog entry in
++            // the Attribute Cache Table.
++            entry->attrCatEntry = *attrCatBuf;
++
++            // set the dirty flag of the corresponding Attribute Cache entry in the
++            // Attribute Cache Table.
++            entry->dirty = true;
++
++            return SUCCESS;
++        }
++    }
++
++    return E_ATTRNOTEXIST;
++}
++
++int AttrCacheTable::setAttrCatEntry(int relId, int attrOffset, AttrCatEntry *attrCatBuf)
++{
++
++    if (relId < 0 || relId >= MAX_OPEN)
++    {
++        return E_OUTOFBOUND;
++    }
++
++    if (attrCache[relId] == nullptr)
++    {
++        return E_RELNOTOPEN;
++    }
++
++    for (AttrCacheEntry *entry = attrCache[relId]; entry != nullptr; entry = entry->next)
++    {
++        if (entry->attrCatEntry.offset == attrOffset)
++        {
++            // copy the attrCatBuf to the corresponding Attribute Catalog entry in
++            // the Attribute Cache Table.
++            entry->attrCatEntry = *attrCatBuf;
++
++            // set the dirty flag of the corresponding Attribute Cache entry in the
++            // Attribute Cache Table.
++            entry->dirty = true;
++
++            return SUCCESS;
++        }
++    }
++
++    return E_ATTRNOTEXIST;
++}
+ 
+ /* Converts a attribute catalog record to AttrCatEntry struct
+     We get the record as Attribute[] from the BlockBuffer.getRecord() function.
+     This function will convert that to a struct AttrCatEntry type.
+ */
+-void AttrCacheTable::recordToAttrCatEntry(union Attribute record[ATTRCAT_NO_ATTRS],
+-                                          AttrCatEntry *attrCatEntry)
+-{
+-    strcpy(attrCatEntry->relName, record[ATTRCAT_REL_NAME_INDEX].sVal);
+-    strcpy(attrCatEntry->attrName, record[ATTRCAT_ATTR_NAME_INDEX].sVal);
+-    attrCatEntry->attrType = (int)record[ATTRCAT_ATTR_TYPE_INDEX].nVal;
+-    attrCatEntry->primaryFlag = (bool)record[ATTRCAT_PRIMARY_FLAG_INDEX].nVal;
+-    attrCatEntry->rootBlock = (int)record[ATTRCAT_ROOT_BLOCK_INDEX].nVal;
+-    attrCatEntry->offset = (int)record[ATTRCAT_OFFSET_INDEX].nVal;
+-
+-    // copy the rest of the fields in the record to the attrCacheEntry struct
+-}
+ 
+ int AttrCacheTable::getSearchIndex(int relId, char attrName[ATTR_SIZE], IndexId *searchIndex)
+ {
+@@ -204,4 +255,29 @@ int AttrCacheTable::resetSearchIndex(int relId, int attrOffset)
+     // return the value returned by setSearchIndex
+     IndexId searchIndex = {-1, -1};
+     return setSearchIndex(relId, attrOffset, &searchIndex);
++}
++
++void AttrCacheTable::recordToAttrCatEntry(union Attribute record[ATTRCAT_NO_ATTRS],
++                                          AttrCatEntry *attrCatEntry)
++{
++    strcpy(attrCatEntry->relName, record[ATTRCAT_REL_NAME_INDEX].sVal);
++    strcpy(attrCatEntry->attrName, record[ATTRCAT_ATTR_NAME_INDEX].sVal);
++    attrCatEntry->attrType = (int)record[ATTRCAT_ATTR_TYPE_INDEX].nVal;
++    attrCatEntry->primaryFlag = (bool)record[ATTRCAT_PRIMARY_FLAG_INDEX].nVal;
++    attrCatEntry->rootBlock = (int)record[ATTRCAT_ROOT_BLOCK_INDEX].nVal;
++    attrCatEntry->offset = (int)record[ATTRCAT_OFFSET_INDEX].nVal;
++
++    // copy the rest of the fields in the record to the attrCacheEntry struct
++}
++
++void AttrCacheTable::attrCatEntryToRecord(AttrCatEntry *attrCatEntry, union Attribute record[ATTRCAT_NO_ATTRS])
++{
++    strcpy(record[ATTRCAT_REL_NAME_INDEX].sVal, attrCatEntry->relName);
++    strcpy(record[ATTRCAT_ATTR_NAME_INDEX].sVal, attrCatEntry->attrName);
++    record[ATTRCAT_ATTR_TYPE_INDEX].nVal = (double)attrCatEntry->attrType;
++    record[ATTRCAT_PRIMARY_FLAG_INDEX].nVal = (double)attrCatEntry->primaryFlag;
++    record[ATTRCAT_ROOT_BLOCK_INDEX].nVal = (double)attrCatEntry->rootBlock;
++    record[ATTRCAT_OFFSET_INDEX].nVal = (double)attrCatEntry->offset;
++
++    // copy the rest of the fields in the attrCacheEntry struct to the record
+ }
+\ No newline at end of file
+diff --git a/mynitcbase/Cache/OpenRelTable.cpp b/mynitcbase/Cache/OpenRelTable.cpp
+index 3381f9b..843209c 100644
+--- a/mynitcbase/Cache/OpenRelTable.cpp
++++ b/mynitcbase/Cache/OpenRelTable.cpp
+@@ -1,351 +1,278 @@
+ #include "OpenRelTable.h"
+ #include <stdlib.h>
+ #include <cstring>
+-#include <iostream>
+-
+-using namespace std;
++#include <stdio.h>
+ 
+ OpenRelTableMetaInfo OpenRelTable::tableMetaInfo[MAX_OPEN];
+ 
+-OpenRelTable::OpenRelTable()
++AttrCacheEntry *createLinkedList(int length)
+ {
++    AttrCacheEntry *head = (AttrCacheEntry *)malloc(sizeof(AttrCacheEntry));
++    AttrCacheEntry *tail = head;
++    for (int i = 1; i < length; i++)
++    {
++        tail->next = (AttrCacheEntry *)malloc(sizeof(AttrCacheEntry));
++        tail = tail->next;
++    }
++    tail->next = nullptr;
++    return head;
++}
+ 
+-    // initialize relCache and attrCache with nullptr
+-    for (int i = 0; i < MAX_OPEN; ++i)
++void freeLinkedList(AttrCacheEntry *head)
++{
++    for (AttrCacheEntry *it = head, *next; it != nullptr; it = next)
++    {
++        next = it->next;
++        free(it);
++    }
++}
++
++OpenRelTable::OpenRelTable()
++{
++    for (int i = 0; i < MAX_OPEN; i++)
+     {
+         RelCacheTable::relCache[i] = nullptr;
+         AttrCacheTable::attrCache[i] = nullptr;
+-        tableMetaInfo[i].free = true;
++        OpenRelTable::tableMetaInfo[i].free = true;
+     }
+ 
+-    /************ Setting up Relation Cache entries ************/
+-    // (we need to populate relation cache with entries for the relation catalog
+-    //  and attribute catalog.)
+-
+-    /**** setting up Relation Catalog relation in the Relation Cache Table****/
+     RecBuffer relCatBlock(RELCAT_BLOCK);
+-
+     Attribute relCatRecord[RELCAT_NO_ATTRS];
+-
+-    struct RelCacheEntry relCacheEntry;
+-
+-    for (int i = 0; i < 2; i++)
++    for (int i = RELCAT_RELID; i <= ATTRCAT_RELID; i++)
+     {
+         relCatBlock.getRecord(relCatRecord, i);
++
++        struct RelCacheEntry relCacheEntry;
+         RelCacheTable::recordToRelCatEntry(relCatRecord, &relCacheEntry.relCatEntry);
+         relCacheEntry.recId.block = RELCAT_BLOCK;
+         relCacheEntry.recId.slot = i;
++
+         RelCacheTable::relCache[i] = (struct RelCacheEntry *)malloc(sizeof(RelCacheEntry));
+         *(RelCacheTable::relCache[i]) = relCacheEntry;
+-    }
+-    // set the value at RelCacheTable::relCache[ATTRCAT_RELID]
+-
+-    /************ Setting up Attribute cache entries ************/
++        tableMetaInfo[i].free = false;
++        memcpy(tableMetaInfo[i].relName, relCacheEntry.relCatEntry.relName, ATTR_SIZE);
++    };
+ 
+     RecBuffer attrCatBlock(ATTRCAT_BLOCK);
++    Attribute attrCatRecord[ATTRCAT_NO_ATTRS];
++    auto relCatListHead = createLinkedList(RELCAT_NO_ATTRS);
++    auto attrCacheEntry = relCatListHead;
+ 
+-    // iterate through all the attributes of the relation catalog and create a linked
+-    // list of AttrCacheEntry (slots 0 to 5)
+-    // for each of the entries, set
+-    //    attrCacheEntry.recId.block = ATTRCAT_BLOCK;
+-    //    attrCacheEntry.recId.slot = i   (0 to 5)
+-    //    and attrCacheEntry.next appropriately
+-    // NOTE: allocate each entry dynamically using malloc
+-    AttrCacheEntry *head, *curr;
+-
+-    int k = 0;
+-    for (int i = 0; i < 2; i++)
++    for (int i = 0; i < RELCAT_NO_ATTRS; i++)
+     {
+-        head = curr = (AttrCacheEntry *)malloc(sizeof(AttrCacheEntry));
+-        int attrCount = RelCacheTable::relCache[i]->relCatEntry.numAttrs;
+-        Attribute attrCatRecord[ATTRCAT_NO_ATTRS];
+-        for (int j = 0; j < attrCount - 1; j++)
+-        {
+-            attrCatBlock.getRecord(attrCatRecord, k);
+-            AttrCacheTable::recordToAttrCatEntry(attrCatRecord, &curr->attrCatEntry);
+-            curr->recId.slot = k;
+-            curr->recId.block = ATTRCAT_BLOCK;
+-            curr->next = (AttrCacheEntry *)malloc(sizeof(AttrCacheEntry));
+-            curr = curr->next;
+-            k++;
+-        }
+-        attrCatBlock.getRecord(attrCatRecord, k);
+-        AttrCacheTable::recordToAttrCatEntry(attrCatRecord, &curr->attrCatEntry);
+-        curr->next = nullptr;
+-        curr->recId.slot = k;
+-        curr->recId.block = ATTRCAT_BLOCK;
+-        k++;
+-        AttrCacheTable::attrCache[i] = head;
++        attrCatBlock.getRecord(attrCatRecord, i);
++
++        AttrCacheTable::recordToAttrCatEntry(attrCatRecord, &(attrCacheEntry->attrCatEntry));
++        (attrCacheEntry->recId).block = ATTRCAT_BLOCK;
++        (attrCacheEntry->recId).slot = i;
++
++        attrCacheEntry = attrCacheEntry->next;
+     }
++    AttrCacheTable::attrCache[RELCAT_RELID] = relCatListHead;
+ 
+-    /************ Setting up tableMetaInfo entries ************/
++    auto attrCatListHead = createLinkedList(ATTRCAT_NO_ATTRS);
++    attrCacheEntry = attrCatListHead;
++    for (int i = RELCAT_NO_ATTRS; i < RELCAT_NO_ATTRS + ATTRCAT_NO_ATTRS; i++)
++    {
++        attrCatBlock.getRecord(attrCatRecord, i);
++        AttrCacheTable::recordToAttrCatEntry(attrCatRecord, &(attrCacheEntry->attrCatEntry));
++        (attrCacheEntry->recId).block = ATTRCAT_BLOCK;
++        (attrCacheEntry->recId).slot = i;
+ 
+-    tableMetaInfo[RELCAT_RELID].free = false;
+-    strcpy(tableMetaInfo[RELCAT_RELID].relName, RELCAT_RELNAME);
+-    tableMetaInfo[ATTRCAT_RELID].free = false;
+-    strcpy(tableMetaInfo[ATTRCAT_RELID].relName, ATTRCAT_RELNAME);
++        attrCacheEntry = attrCacheEntry->next;
++    }
++    AttrCacheTable::attrCache[ATTRCAT_RELID] = attrCatListHead;
+ }
+ 
+-int OpenRelTable::getFreeOpenRelTableEntry()
++int OpenRelTable::getRelId(char relName[ATTR_SIZE])
+ {
+-
+-    /* traverse through the tableMetaInfo array,
+-      find a free entry in the Open Relation Table.*/
+     for (int i = 0; i < MAX_OPEN; i++)
+     {
+-        if (tableMetaInfo[i].free)
++        if (!tableMetaInfo[i].free && strcmp(relName, tableMetaInfo[i].relName) == 0)
+             return i;
+     }
+ 
+-    return E_CACHEFULL;
+-    // if found return the relation id, else return E_CACHEFULL.
++    return E_RELNOTOPEN;
+ }
+ 
+-int OpenRelTable::getRelId(char relName[ATTR_SIZE])
++int OpenRelTable::getFreeOpenRelTableEntry()
+ {
+-    for (int i = 0; i < MAX_OPEN; i++)
++    for (int i = 2; i < MAX_OPEN; i++)
+     {
+         if (tableMetaInfo[i].free)
+-            continue;
+-        if (strcmp(tableMetaInfo[i].relName, relName) == 0)
+             return i;
+     }
+ 
+-    return E_RELNOTOPEN;
++    return E_CACHEFULL;
+ }
+ 
+ int OpenRelTable::openRel(char relName[ATTR_SIZE])
+ {
+-    int ret = OpenRelTable::getRelId(relName);
+-    if (ret != E_RELNOTOPEN)
+-    {
+-        return ret;
+-    }
++    int alreadyExists = OpenRelTable::getRelId(relName);
+ 
+-    /* find a free slot in the Open Relation Table
+-       using OpenRelTable::getFreeOpenRelTableEntry(). */
+-    ret = OpenRelTable::getFreeOpenRelTableEntry();
+-    if (ret == E_CACHEFULL)
+-    {
+-        return E_CACHEFULL;
+-    }
++    if (alreadyExists >= 0)
++        return alreadyExists;
+ 
+-    // let relId be used to store the free slot.
+-    int relId = ret;
++    int freeSlot = OpenRelTable::getFreeOpenRelTableEntry();
+ 
+-    /****** Setting up Relation Cache entry for the relation ******/
++    if (freeSlot == E_CACHEFULL)
++        return E_CACHEFULL;
+ 
+-    /* search for the entry with relation name, relName, in the Relation Catalog using
+-        BlockAccess::linearSearch().
+-        Care should be taken to reset the searchIndex of the relation RELCAT_RELID
+-        before calling linearSearch().*/
++    Attribute relNameAttribute;
++    memcpy(relNameAttribute.sVal, relName, ATTR_SIZE);
+     RelCacheTable::resetSearchIndex(RELCAT_RELID);
+-    // relcatRecId stores the rec-id of the relation `relName` in the Relation Catalog.
+-    Attribute check_relname;
+-    strcpy(check_relname.sVal, relName);
+-    // TODO's: Get this dynamically from RELCAT's ATTRCAT
+-    char def_RELCAT_ATTR_RELNAME[16] = "RelName";
+-    RecId relcatRecId = BlockAccess::linearSearch(RELCAT_RELID, def_RELCAT_ATTR_RELNAME, check_relname, EQ);
++    RecId relcatRecId = BlockAccess::linearSearch(RELCAT_RELID, (char *)RELCAT_ATTR_RELNAME, relNameAttribute, EQ);
+ 
+     if (relcatRecId.block == -1 && relcatRecId.slot == -1)
+-    {
+-        // (the relation is not found in the Relation Catalog.)
+         return E_RELNOTEXIST;
+-    }
++    RecBuffer recBuffer(relcatRecId.block);
++
++    Attribute record[RELCAT_NO_ATTRS];
++    recBuffer.getRecord(record, relcatRecId.slot);
++
++    RelCatEntry relCatEntry;
++
++    RelCacheTable::recordToRelCatEntry(record, &relCatEntry);
++
++    RelCacheTable::relCache[freeSlot] = (RelCacheEntry *)malloc(sizeof(RelCacheEntry));
++
++    RelCacheTable::relCache[freeSlot]->recId = relcatRecId;
++    RelCacheTable::relCache[freeSlot]->relCatEntry = relCatEntry;
++
++    int numAttrs = relCatEntry.numAttrs;
++    AttrCacheEntry *listHead = createLinkedList(numAttrs);
++    AttrCacheEntry *node = listHead;
+ 
+-    /* read the record entry corresponding to relcatRecId and create a relCacheEntry
+-        on it using RecBuffer::getRecord() and RelCacheTable::recordToRelCatEntry().
+-        update the recId field of this Relation Cache entry to relcatRecId.
+-        use the Relation Cache entry to set the relId-th entry of the RelCacheTable.
+-      NOTE: make sure to allocate memory for the RelCacheEntry using malloc()
+-    */
+-    RecBuffer recEntry(relcatRecId.block);
+-    struct RelCacheEntry recCacheEntry;
+-    Attribute attrRecord[RELCAT_NO_ATTRS];
+-    recEntry.getRecord(attrRecord, relcatRecId.slot);
+-    RelCacheTable::recordToRelCatEntry(attrRecord, &recCacheEntry.relCatEntry);
+-    recCacheEntry.recId = relcatRecId;
+-
+-    RelCacheTable::relCache[relId] = (struct RelCacheEntry *)malloc(sizeof(struct RelCacheEntry));
+-    *(RelCacheTable::relCache[relId]) = recCacheEntry;
+-
+-    /****** Setting up Attribute Cache entry for the relation ******/
+-    RecBuffer attrEntry(relcatRecId.block);
+-    // let listHead be used to hold the head of the linked list of attrCache entries.
+-    AttrCacheEntry *listHead, *curr;
+-    listHead = curr = (AttrCacheEntry *)malloc(sizeof(AttrCacheEntry));
+-    int totalAttrs = recCacheEntry.relCatEntry.numAttrs;
+-    for (int i = 0; i < totalAttrs - 1; i++)
+-    {
+-        curr->next = (AttrCacheEntry *)malloc(sizeof(AttrCacheEntry));
+-        curr = curr->next;
+-    }
+-    curr->next = nullptr;
+-    curr = listHead;
+-    /*iterate over all the entries in the Attribute Catalog corresponding to each
+-    attribute of the relation relName by multiple calls of BlockAccess::linearSearch()
+-    care should be taken to reset the searchIndex of the relation, ATTRCAT_RELID,
+-    corresponding to Attribute Catalog before the first call to linearSearch().*/
+-
+-    // TODO's: Get this dynamically from ATTRCAT's ATTRCAT
+-    char def_ATTRCAT_ATTR_RELNAME[16] = "RelName";
+     RelCacheTable::resetSearchIndex(ATTRCAT_RELID);
+-    for (int i = 0; i < totalAttrs; i++)
++    while (true)
+     {
+-        /* let attrcatRecId store a valid record id an entry of the relation, relName,
+-        in the Attribute Catalog.*/
+-        Attribute check_relname;
+-        strcpy(check_relname.sVal, relName);
+-        RecId attrcatRecId = BlockAccess::linearSearch(ATTRCAT_RELID, def_ATTRCAT_ATTR_RELNAME, check_relname, EQ);
+-
+-        /* read the record entry corresponding to attrcatRecId and create an
+-        Attribute Cache entry on it using RecBuffer::getRecord() and
+-        AttrCacheTable::recordToAttrCatEntry().
+-        update the recId field of this Attribute Cache entry to attrcatRecId.
+-        add the Attribute Cache entry to the linked list of listHead .*/
+-        // NOTE: make sure to allocate memory for the AttrCacheEntry using malloc()
+-        RecBuffer recbuffer(attrcatRecId.block);
+-        Attribute record[ATTRCAT_NO_ATTRS];
+-        recbuffer.getRecord(record, attrcatRecId.slot);
+-        AttrCacheTable::recordToAttrCatEntry(record, &curr->attrCatEntry);
+-        curr->recId = attrcatRecId;
+-        curr = curr->next;
++        RecId searchRes = BlockAccess::linearSearch(ATTRCAT_RELID, (char *)ATTRCAT_ATTR_RELNAME, relNameAttribute, EQ);
++
++        if (searchRes.block != -1 && searchRes.slot != -1)
++        {
++            Attribute attrcatRecord[ATTRCAT_NO_ATTRS];
++
++            RecBuffer attrRecBuffer(searchRes.block);
++
++            attrRecBuffer.getRecord(attrcatRecord, searchRes.slot);
++
++            AttrCatEntry attrCatEntry;
++            AttrCacheTable::recordToAttrCatEntry(attrcatRecord, &attrCatEntry);
++
++            node->recId = searchRes;
++            node->attrCatEntry = attrCatEntry;
++            node = node->next;
++        }
++        else
++            break;
+     }
+ 
+-    // set the relIdth entry of the AttrCacheTable to listHead.
+-    AttrCacheTable::attrCache[relId] = listHead;
+-    /****** Setting up metadata in the Open Relation Table for the relation******/
++    AttrCacheTable::attrCache[freeSlot] = listHead;
+ 
+-    // update the relIdth entry of the tableMetaInfo with free as false and
+-    // relName as the input.
+-    tableMetaInfo[relId].free = false;
+-    strcpy(tableMetaInfo[relId].relName, relName);
++    OpenRelTable::tableMetaInfo[freeSlot].free = false;
++    memcpy(OpenRelTable::tableMetaInfo[freeSlot].relName, relCatEntry.relName, ATTR_SIZE);
+ 
+-    return relId;
++    return freeSlot;
+ }
+ 
+ int OpenRelTable::closeRel(int relId)
+ {
+     if (relId == RELCAT_RELID || relId == ATTRCAT_RELID)
+-    {
+         return E_NOTPERMITTED;
+-    }
+ 
+     if (relId < 0 || relId >= MAX_OPEN)
+-    {
+-        // cout << relId << endl;
+         return E_OUTOFBOUND;
+-    }
+ 
+-    if (tableMetaInfo[relId].free)
+-    {
++    if (tableMetaInfo[relId].free == true)
+         return E_RELNOTOPEN;
++
++    RelCacheEntry *relCacheEntry = RelCacheTable::relCache[relId];
++
++    if (relCacheEntry && relCacheEntry->dirty == true)
++    {
++        RecBuffer relCatBlock((relCacheEntry->recId).block);
++
++        RelCatEntry relCatEntry = relCacheEntry->relCatEntry;
++        Attribute record[RELCAT_NO_ATTRS];
++
++        RelCacheTable::relCatEntryToRecord(&relCatEntry, record);
++
++        relCatBlock.setRecord(record, (relCacheEntry->recId).slot);
+     }
+ 
+-    // free the memory allocated in the relation and attribute caches which was
+-    // allocated in the OpenRelTable::openRel() function
+-    if (RelCacheTable::relCache[relId] != nullptr)
++    free(relCacheEntry);
++    RelCacheTable::relCache[relId] = nullptr;
++
++    for (auto attrCacheEntry = AttrCacheTable::attrCache[relId]; attrCacheEntry != nullptr; attrCacheEntry = attrCacheEntry->next)
+     {
+-        if (RelCacheTable::relCache[relId]->dirty)
++        if (attrCacheEntry && attrCacheEntry->dirty == true)
+         {
++            RecBuffer attrCatBlock((attrCacheEntry->recId).block);
+ 
+-            /* Get the Relation Catalog entry from RelCacheTable::relCache
+-            Then convert it to a record using RelCacheTable::relCatEntryToRecord(). */
+-            RelCatEntry relCatEntry = RelCacheTable::relCache[relId]->relCatEntry;
+-            union Attribute record[RELCAT_NO_ATTRS];
+-            RelCacheTable::relCatEntryToRecord(&relCatEntry, record);
++            AttrCatEntry attrCatEntry = attrCacheEntry->attrCatEntry;
++            Attribute record[ATTRCAT_NO_ATTRS];
+ 
+-            // declaring an object of RecBuffer class to write back to the buffer
+-            RecBuffer relCatBlock(RelCacheTable::relCache[relId]->recId.block);
++            AttrCacheTable::attrCatEntryToRecord(&attrCatEntry, record);
+ 
+-            // Write back to the buffer using relCatBlock.setRecord() with recId.slot
+-            relCatBlock.setRecord(record, RelCacheTable::relCache[relId]->recId.slot);
++            attrCatBlock.setRecord(record, (attrCacheEntry->recId).slot);
+         }
+-        free(RelCacheTable::relCache[relId]);
+     }
+ 
+-    // we will do write back in subsequent stages
+-    AttrCacheEntry *head = AttrCacheTable::attrCache[relId];
+-    AttrCacheEntry *temp = nullptr;
+-    while (head != nullptr)
+-    {
+-        temp = head;
+-        head = head->next;
+-        free(temp);
+-        temp = nullptr;
+-    }
+-    RelCacheTable::relCache[relId] = nullptr;
++    freeLinkedList(AttrCacheTable::attrCache[relId]);
+     AttrCacheTable::attrCache[relId] = nullptr;
+ 
+-    // update `tableMetaInfo` to set `relId` as a free slot
+     tableMetaInfo[relId].free = true;
+-    tableMetaInfo[relId].relName[0] = '\0';
+-
+     return SUCCESS;
+ }
+ 
+ OpenRelTable::~OpenRelTable()
+ {
+-    for (int i = 2; i < MAX_OPEN; ++i)
++
++    for (int i = 2; i < MAX_OPEN; i++)
+     {
+-        if (tableMetaInfo[i].free == false)
+-        {
++        if (!tableMetaInfo[i].free)
+             OpenRelTable::closeRel(i);
+-        }
+     }
+ 
+-    /**** Closing the catalog relations in the relation cache ****/
++    for (int i = 2; i < MAX_OPEN; i++)
++    {
++        free(RelCacheTable::relCache[i]);
++        freeLinkedList(AttrCacheTable::attrCache[i]);
+ 
+-    // releasing the relation cache entry of the attribute catalog
++        RelCacheTable::relCache[i] = nullptr;
++        AttrCacheTable::attrCache[i] = nullptr;
++    }
+ 
+     if (RelCacheTable::relCache[ATTRCAT_RELID]->dirty)
+     {
++        Attribute relCatRecord[RELCAT_NO_ATTRS];
+ 
+-        /* Get the Relation Catalog entry from RelCacheTable::relCache
+-        Then convert it to a record using RelCacheTable::relCatEntryToRecord(). */
+-        Attribute record[RELCAT_NO_ATTRS];
+-        RelCacheTable::relCatEntryToRecord(&RelCacheTable::relCache[ATTRCAT_RELID]->relCatEntry, record);
+-
+-        // declaring an object of RecBuffer class to write back to the buffer
++        RelCatEntry relCatEntry = RelCacheTable::relCache[ATTRCAT_RELID]->relCatEntry;
+         RecId recId = RelCacheTable::relCache[ATTRCAT_RELID]->recId;
++
++        RelCacheTable::relCatEntryToRecord(&relCatEntry, relCatRecord);
++
+         RecBuffer relCatBlock(recId.block);
++        relCatBlock.setRecord(relCatRecord, recId.slot);
+ 
+-        // Write back to the buffer using relCatBlock.setRecord() with recId.slot
+-        relCatBlock.setRecord(record, recId.slot);
++        free(RelCacheTable::relCache[ATTRCAT_RELID]);
+     }
+-    // free the memory dynamically allocated to this RelCacheEntry
+-    free(RelCacheTable::relCache[ATTRCAT_RELID]);
+-
+-    // releasing the relation cache entry of the relation catalog
+ 
+     if (RelCacheTable::relCache[RELCAT_RELID]->dirty)
+     {
++        Attribute relCatRecord[RELCAT_NO_ATTRS];
+ 
+-        /* Get the Relation Catalog entry from RelCacheTable::relCache
+-        Then convert it to a record using RelCacheTable::relCatEntryToRecord(). */
+-        Attribute record[RELCAT_NO_ATTRS];
+-        RelCacheTable::relCatEntryToRecord(&RelCacheTable::relCache[RELCAT_RELID]->relCatEntry, record);
+-
+-        // declaring an object of RecBuffer class to write back to the buffer
++        RelCatEntry relCatEntry = RelCacheTable::relCache[RELCAT_RELID]->relCatEntry;
+         RecId recId = RelCacheTable::relCache[RELCAT_RELID]->recId;
++
++        RelCacheTable::relCatEntryToRecord(&relCatEntry, relCatRecord);
++
+         RecBuffer relCatBlock(recId.block);
++        relCatBlock.setRecord(relCatRecord, recId.slot);
+ 
+-        // Write back to the buffer using relCatBlock.setRecord() with recId.slot
+-        relCatBlock.setRecord(record, recId.slot);
++        free(RelCacheTable::relCache[RELCAT_RELID]);
+     }
+-    // free the memory dynamically allocated for this RelCacheEntry
+ 
+-    for (int i = 0; i <= 1; i++)
+-    {
+-        // free attrcache
+-        AttrCacheEntry *entry = AttrCacheTable::attrCache[i];
+-        while (entry)
+-        {
+-            AttrCacheEntry *temp = entry;
+-            entry = entry->next;
+-            free(temp);
+-            temp = nullptr;
+-        }
+-        AttrCacheTable::attrCache[i] = nullptr;
+-    }
++    freeLinkedList(AttrCacheTable::attrCache[RELCAT_RELID]);
++    freeLinkedList(AttrCacheTable::attrCache[ATTRCAT_RELID]);
+ }
+diff --git a/mynitcbase/Frontend/Frontend.cpp b/mynitcbase/Frontend/Frontend.cpp
+index dc0e7a7..a1e7f36 100644
+--- a/mynitcbase/Frontend/Frontend.cpp
++++ b/mynitcbase/Frontend/Frontend.cpp
+@@ -1,8 +1,9 @@
+ #include "Frontend.h"
+-
++#include <iostream>
+ #include <cstring>
+ #include <iostream>
+ 
++using namespace std;
+ int Frontend::create_table(char relname[ATTR_SIZE], int no_attrs, char attributes[][ATTR_SIZE], int type_attrs[])
+ {
+   return Schema::createRel(relname, no_attrs, attributes, type_attrs);
+@@ -38,14 +39,13 @@ int Frontend::alter_table_rename_column(char relname[ATTR_SIZE], char attrname_f
+ 
+ int Frontend::create_index(char relname[ATTR_SIZE], char attrname[ATTR_SIZE])
+ {
+-  // Schema::createIndex
+-  return SUCCESS;
++
++  return Schema::createIndex(relname, attrname);
+ }
+ 
+ int Frontend::drop_index(char relname[ATTR_SIZE], char attrname[ATTR_SIZE])
+ {
+-  // Schema::dropIndex
+-  return SUCCESS;
++  return Schema::dropIndex(relname, attrname);
+ }
+ 
+ int Frontend::insert_into_table_values(char relname[ATTR_SIZE], int attr_count, char attr_values[][ATTR_SIZE])
+@@ -88,7 +88,7 @@ int Frontend::select_attrlist_from_table_where(
+ 
+   // Open the TEMPI relation using OpenRelTable::openRel()
+   int tempRelId = OpenRelTable::openRel(TEMPI);
+-  if (tempRelId < 0)
++  if (tempRelId < 0 || tempRelId >= MAX_OPEN)
+   {
+     Schema::deleteRel(TEMPI);
+     return tempRelId;
+@@ -108,7 +108,6 @@ int Frontend::select_attrlist_from_table_where(
+ 
+   // Delete the TEMPI relation using Schema::deleteRel()
+   Schema::deleteRel(TEMPI);
+-
+   // Return any error codes from project() or SUCCESS otherwise
+   return SUCCESS;
+ }
+diff --git a/mynitcbase/Schema/Schema.cpp b/mynitcbase/Schema/Schema.cpp
+index 9a43fed..a013180 100644
+--- a/mynitcbase/Schema/Schema.cpp
++++ b/mynitcbase/Schema/Schema.cpp
+@@ -22,8 +22,7 @@ int Schema::createRel(char relName[], int nAttrs, char attrs[][ATTR_SIZE], int a
+     // for attribute value attribute "RelName" = relNameAsAttribute using
+     // BlockAccess::linearSearch() with OP = EQ
+     RelCacheTable::resetSearchIndex(RELCAT_RELID);
+-    char def_RELCAT_ATTR_RELNAME[16] = "RelName";
+-    targetRelId = BlockAccess::linearSearch(RELCAT_RELID, def_RELCAT_ATTR_RELNAME, relNameAsAttribute, EQ);
++    targetRelId = BlockAccess::linearSearch(RELCAT_RELID, (char *)RELCAT_ATTR_RELNAME, relNameAsAttribute, EQ);
+ 
+     // if a relation with name `relName` already exists  ( linearSearch() does
+     //                                                     not return {-1,-1} )
+@@ -107,7 +106,7 @@ int Schema::createRel(char relName[], int nAttrs, char attrs[][ATTR_SIZE], int a
+         retVal = BlockAccess::insert(ATTRCAT_RELID, attrCatRecord);
+         if (retVal != SUCCESS)
+         {
+-            deleteRel(relName);
++            Schema::deleteRel(relName);
+             return E_DISKFULL;
+         }
+     }
+@@ -122,7 +121,9 @@ int Schema::deleteRel(char *relName)
+     //     return E_NOTPERMITTED
+     // (check if the relation names are either "RELATIONCAT" and "ATTRIBUTECAT".
+     // you may use the following constants: RELCAT_RELNAME and ATTRCAT_RELNAME)
+-    if (strcmp(relName, RELCAT_RELNAME) == 0 || strcmp(relName, ATTRCAT_RELNAME) == 0)
++    if (
++        strcmp(relName, (char *)RELCAT_RELNAME) == 0 ||
++        strcmp(relName, (char *)ATTRCAT_RELNAME) == 0)
+     {
+         return E_NOTPERMITTED;
+     }
+@@ -150,6 +151,87 @@ int Schema::deleteRel(char *relName)
+     */
+ }
+ 
++int Schema::createIndex(char relName[ATTR_SIZE], char attrName[ATTR_SIZE])
++{
++    // if the relName is either Relation Catalog or Attribute Catalog,
++    // return E_NOTPERMITTED
++    // (check if the relation names are either "RELATIONCAT" and "ATTRIBUTECAT".
++    // you may use the following constants: RELCAT_RELNAME and ATTRCAT_RELNAME)
++    if (
++        strcmp(relName, (char *)RELCAT_RELNAME) == 0 ||
++        strcmp(relName, (char *)ATTRCAT_RELNAME) == 0)
++    {
++        return E_NOTPERMITTED;
++    }
++
++    // get the relation's rel-id using OpenRelTable::getRelId() method
++    int relId = OpenRelTable::getRelId(relName);
++
++    // if relation is not open in open relation table, return E_RELNOTOPEN
++    // (check if the value returned from getRelId function call = E_RELNOTOPEN)
++    if (relId == E_RELNOTOPEN)
++    {
++        return E_RELNOTOPEN;
++    }
++
++    // create a bplus tree using BPlusTree::bPlusCreate() and return the value
++
++    return BPlusTree::bPlusCreate(relId, attrName);
++}
++
++int Schema::dropIndex(char *relName, char *attrName)
++{
++    // if the relName is either Relation Catalog or Attribute Catalog,
++    // return E_NOTPERMITTED
++    // (check if the relation names are either "RELATIONCAT" and "ATTRIBUTECAT".
++    // you may use the following constants: RELCAT_RELNAME and ATTRCAT_RELNAME)
++    if (
++        strcmp(relName, (char *)RELCAT_RELNAME) == 0 ||
++        strcmp(relName, (char *)ATTRCAT_RELNAME) == 0)
++    {
++        return E_NOTPERMITTED;
++    }
++
++    // get the rel-id using OpenRelTable::getRelId()
++    int relId = OpenRelTable::getRelId(relName);
++
++    // if relation is not open in open relation table, return E_RELNOTOPEN
++    // (check if the value returned from getRelId function call = E_RELNOTOPEN)
++    if (relId == E_RELNOTOPEN)
++    {
++        return E_RELNOTOPEN;
++    }
++
++    // get the attribute catalog entry corresponding to the attribute
++    // using AttrCacheTable::getAttrCatEntry()
++    // if the attribute does not exist, return E_ATTRNOTEXIST
++    // (check if the value returned from getAttrCatEntry function call = E_ATTRNOTEXIST)
++    AttrCatEntry attrCatEntry;
++    if (AttrCacheTable::getAttrCatEntry(relId, attrName, &attrCatEntry) == E_ATTRNOTEXIST)
++    {
++        return E_ATTRNOTEXIST;
++    }
++
++    // if getAttrCatEntry() fails, return E_ATTRNOTEXIST
++
++    int rootBlock = attrCatEntry.rootBlock;
++
++    if (rootBlock == -1)
++    {
++        return E_NOINDEX;
++    }
++
++    // destroy the bplus tree rooted at rootBlock using BPlusTree::bPlusDestroy()
++    BPlusTree::bPlusDestroy(rootBlock);
++
++    // set rootBlock = -1 in the attribute cache entry of the attribute using
++    // AttrCacheTable::setAttrCatEntry()
++    attrCatEntry.rootBlock = -1;
++    AttrCacheTable::setAttrCatEntry(relId, attrName, &attrCatEntry);
++
++    return SUCCESS;
++}
++
+ int Schema::openRel(char relName[ATTR_SIZE])
+ {
+     int ret = OpenRelTable::openRel(relName);
+@@ -191,8 +273,11 @@ int Schema::renameRel(char oldRelName[ATTR_SIZE], char newRelName[ATTR_SIZE])
+     // return E_NOTPERMITTED
+     // (check if the relation names are either "RELATIONCAT" and "ATTRIBUTECAT".
+     // you may use the following constants: RELCAT_RELNAME and ATTRCAT_RELNAME)
+-    if (strcmp(oldRelName, RELCAT_RELNAME) == 0 || strcmp(oldRelName, ATTRCAT_RELNAME) == 0 ||
+-        strcmp(newRelName, RELCAT_RELNAME) == 0 || strcmp(newRelName, ATTRCAT_RELNAME) == 0)
++    if (
++        strcmp(oldRelName, (char *)RELCAT_RELNAME) == 0 ||
++        strcmp(oldRelName, (char *)ATTRCAT_RELNAME) == 0 ||
++        strcmp(newRelName, (char *)RELCAT_RELNAME) == 0 ||
++        strcmp(newRelName, (char *)ATTRCAT_RELNAME) == 0)
+     {
+         return E_NOTPERMITTED;
+     }
+@@ -216,7 +301,9 @@ int Schema::renameAttr(char relName[ATTR_SIZE], char oldAttrName[ATTR_SIZE], cha
+     // return E_NOTPERMITTED
+     // (check if the relation names are either "RELATIONCAT" and "ATTRIBUTECAT".
+     // you may use the following constants: RELCAT_RELNAME and ATTRCAT_RELNAME)
+-    if (strcmp(relName, RELCAT_RELNAME) == 0 || strcmp(relName, ATTRCAT_RELNAME) == 0)
++    if (
++        strcmp(relName, (char *)RELCAT_RELNAME) == 0 ||
++        strcmp(relName, (char *)ATTRCAT_RELNAME) == 0)
+     {
+         return E_NOTPERMITTED;
+     }
+diff --git a/mynitcbase/define/constants.h b/mynitcbase/define/constants.h
+index b4f0cc5..bf1e93b 100644
+--- a/mynitcbase/define/constants.h
++++ b/mynitcbase/define/constants.h
+@@ -1,133 +1,143 @@
+ #ifndef NITCBASE_CONSTANTS_H
+ #define NITCBASE_CONSTANTS_H
+ 
+-#define DISK_PATH "../Disk/disk"                            // Path to disk
+-#define DISK_RUN_COPY_PATH "../Disk/disk_run_copy"          // Path to run copy of the disk
+-#define Files_Path "../Files/"                              // Path to Files directory
+-#define INPUT_FILES_PATH "../Files/Input_Files/"            // Path to Input_Files directory inside the Files directory
+-#define OUTPUT_FILES_PATH "../Files/Output_Files/"          // Path to Output_Files directory inside the Files directory
+-#define BATCH_FILES_PATH "../Files/Batch_Execution_Files/"  // Path to Batch_Execution_Files directory inside the Files directory
+-
+-#define BLOCK_SIZE 2048             // Size of Block in bytes
+-#define ATTR_SIZE 16                // Size of an attribute in bytes
+-#define DISK_SIZE 16 * 1024 * 1024  // Size of Disk in bytes
+-#define HEADER_SIZE 32              // Size of Header of a block in bytes (not including slotmap)
+-#define LCHILD_SIZE 4               // Size of field Lchild in bytes
+-#define RCHILD_SIZE 4               // Size of field Rchild in bytes
+-#define PBLOCK_SIZE 4               // Size of field Pblock in bytes
+-#define BLOCKNUM_SIZE 4             // Size of field BlockNum in bytes
+-#define SLOTNUM_SIZE 4              // Size of field SlotNum in bytes
+-#define INDEX_BLOCK_UNUSED_BYTES 8  // Size of unused field in index block (in bytes)
+-#define INTERNAL_ENTRY_SIZE 24      // Size of an Internal Index Entry in the Internal Index Block (in bytes)
+-#define LEAF_ENTRY_SIZE 32          // Size of an Leaf Index Entry in the Leaf Index Block (in bytes)
+-
+-#define DISK_BLOCKS 8192             // Number of block in disk
+-#define BUFFER_CAPACITY 32           // Total number of blocks available in the Buffer (Capacity of the Buffer in blocks)
+-#define MAX_OPEN 12                  // Maximum number of relations allowed to be open and cached in Cache Layer.
+-#define BLOCK_ALLOCATION_MAP_SIZE 4  // Number of blocks given for Block Allocation Map in the disk
+-
+-#define RELCAT_NO_ATTRS 6   // Number of attributes present in one entry / record of the Relation Catalog
+-#define ATTRCAT_NO_ATTRS 6  // Number of attributes present in one entry / record of the Attribute Catalog
+-
+-#define RELCAT_BLOCK 4   // Disk block number for the block of Relation Catalog
+-#define ATTRCAT_BLOCK 5  // Disk block number for the first block of Attribute Catalog
+-
+-#define NO_OF_ATTRS_RELCAT_ATTRCAT 6    // Common variable to indicate the number of attributes present in one entry of Relation Catalog / Attribute Catalog
+-#define SLOTMAP_SIZE_RELCAT_ATTRCAT 20  // Size of slotmap in both Relation Catalog and Attribute Catalog
+-
+-#define SLOT_OCCUPIED '1'    // Value to mark a slot in Slotmap as Occupied
+-#define SLOT_UNOCCUPIED '0'  // Value to mark a slot in Slotmap as Unoccupied
+-
+-#define RELCAT_RELID 0   // Relid for Relation catalog
+-#define ATTRCAT_RELID 1  // Relid for Attribute catalog
+-
+-#define RELCAT_SLOTNUM_FOR_RELCAT 0   // Slot number for relation catalog in relation catalog
+-#define RELCAT_SLOTNUM_FOR_ATTRCAT 1  // Slot number for attribute catalog in relation catalog
+-
+-#define INVALID_BLOCKNUM -1  // Indicates the Block number as Invalid.
+-
+-enum AttributeType {
+-  NUMBER = 0,  // for an integer or a floating point number
++#define DISK_PATH "../Disk/disk"                           // Path to disk
++#define DISK_RUN_COPY_PATH "../Disk/disk_run_copy"         // Path to run copy of the disk
++#define Files_Path "../Files/"                             // Path to Files directory
++#define INPUT_FILES_PATH "../Files/Input_Files/"           // Path to Input_Files directory inside the Files directory
++#define OUTPUT_FILES_PATH "../Files/Output_Files/"         // Path to Output_Files directory inside the Files directory
++#define BATCH_FILES_PATH "../Files/Batch_Execution_Files/" // Path to Batch_Execution_Files directory inside the Files directory
++
++#define BLOCK_SIZE 2048            // Size of Block in bytes
++#define ATTR_SIZE 16               // Size of an attribute in bytes
++#define DISK_SIZE 16 * 1024 * 1024 // Size of Disk in bytes
++#define HEADER_SIZE 32             // Size of Header of a block in bytes (not including slotmap)
++#define LCHILD_SIZE 4              // Size of field Lchild in bytes
++#define RCHILD_SIZE 4              // Size of field Rchild in bytes
++#define PBLOCK_SIZE 4              // Size of field Pblock in bytes
++#define BLOCKNUM_SIZE 4            // Size of field BlockNum in bytes
++#define SLOTNUM_SIZE 4             // Size of field SlotNum in bytes
++#define INDEX_BLOCK_UNUSED_BYTES 8 // Size of unused field in index block (in bytes)
++#define INTERNAL_ENTRY_SIZE 24     // Size of an Internal Index Entry in the Internal Index Block (in bytes)
++#define LEAF_ENTRY_SIZE 32         // Size of an Leaf Index Entry in the Leaf Index Block (in bytes)
++
++#define DISK_BLOCKS 8192            // Number of block in disk
++#define BUFFER_CAPACITY 32          // Total number of blocks available in the Buffer (Capacity of the Buffer in blocks)
++#define MAX_OPEN 12                 // Maximum number of relations allowed to be open and cached in Cache Layer.
++#define BLOCK_ALLOCATION_MAP_SIZE 4 // Number of blocks given for Block Allocation Map in the disk
++
++#define RELCAT_NO_ATTRS 6  // Number of attributes present in one entry / record of the Relation Catalog
++#define ATTRCAT_NO_ATTRS 6 // Number of attributes present in one entry / record of the Attribute Catalog
++
++#define RELCAT_BLOCK 4  // Disk block number for the block of Relation Catalog
++#define ATTRCAT_BLOCK 5 // Disk block number for the first block of Attribute Catalog
++
++#define NO_OF_ATTRS_RELCAT_ATTRCAT 6   // Common variable to indicate the number of attributes present in one entry of Relation Catalog / Attribute Catalog
++#define SLOTMAP_SIZE_RELCAT_ATTRCAT 20 // Size of slotmap in both Relation Catalog and Attribute Catalog
++
++#define SLOT_OCCUPIED '1'   // Value to mark a slot in Slotmap as Occupied
++#define SLOT_UNOCCUPIED '0' // Value to mark a slot in Slotmap as Unoccupied
++
++#define RELCAT_RELID 0  // Relid for Relation catalog
++#define ATTRCAT_RELID 1 // Relid for Attribute catalog
++
++#define CLOSE_RELCAT_RELID 13  // Relid for Close Relation Catalog
++#define CLOSE_ATTRCAT_RELID 14 // Relid for Close Attribute Catalog
++
++#define RELCAT_SLOTNUM_FOR_RELCAT 0  // Slot number for relation catalog in relation catalog
++#define RELCAT_SLOTNUM_FOR_ATTRCAT 1 // Slot number for attribute catalog in relation catalog
++
++#define INVALID_BLOCKNUM -1 // Indicates the Block number as Invalid.
++
++enum AttributeType
++{
++  NUMBER = 0, // for an integer or a floating point number
+   STRING = 1,
+ };
+ 
+-enum ConditionalOperators {
+-  EQ,  // =
+-  LE,  // <=
+-  LT,  // <
+-  GE,  // >=
+-  GT,  // >
+-  NE   // !=
++enum ConditionalOperators
++{
++  EQ, // =
++  LE, // <=
++  LT, // <
++  GE, // >=
++  GT, // >
++  NE  // !=
+ };
+ 
+-enum BlockType {
+-  REC,           // record block
+-  IND_INTERNAL,  // internal index block
+-  IND_LEAF,      // leaf index block
+-  UNUSED_BLK,    // unused block
+-  BMAP           // block allocation map
++enum BlockType
++{
++  REC,          // record block
++  IND_INTERNAL, // internal index block
++  IND_LEAF,     // leaf index block
++  UNUSED_BLK,   // unused block
++  BMAP          // block allocation map
+ };
+ 
+-enum OpenRelationEntryStatus {
++enum OpenRelationEntryStatus
++{
+   OCCUPIED = 1,
+   FREE = 0
+ };
+ 
+ // Indexes for Relation Catalog Attributes
+-enum RelCatFieldIndex {
+-  RELCAT_REL_NAME_INDEX = 0,           // Relation Name
+-  RELCAT_NO_ATTRIBUTES_INDEX = 1,      // #Attributes
+-  RELCAT_NO_RECORDS_INDEX = 2,         // #Records
+-  RELCAT_FIRST_BLOCK_INDEX = 3,        // First Block
+-  RELCAT_LAST_BLOCK_INDEX = 4,         // Last Block
+-  RELCAT_NO_SLOTS_PER_BLOCK_INDEX = 5  // #Slots
++enum RelCatFieldIndex
++{
++  RELCAT_REL_NAME_INDEX = 0,          // Relation Name
++  RELCAT_NO_ATTRIBUTES_INDEX = 1,     // #Attributes
++  RELCAT_NO_RECORDS_INDEX = 2,        // #Records
++  RELCAT_FIRST_BLOCK_INDEX = 3,       // First Block
++  RELCAT_LAST_BLOCK_INDEX = 4,        // Last Block
++  RELCAT_NO_SLOTS_PER_BLOCK_INDEX = 5 // #Slots
+ };
+ 
+ // Indexes for Attribute Catalog Attributes
+-enum AttrCatFieldIndex {
+-  ATTRCAT_REL_NAME_INDEX = 0,      // Relation Name
+-  ATTRCAT_ATTR_NAME_INDEX = 1,     // Attribute Name
+-  ATTRCAT_ATTR_TYPE_INDEX = 2,     // Attribute Type
+-  ATTRCAT_PRIMARY_FLAG_INDEX = 3,  // Primary Flag
+-  ATTRCAT_ROOT_BLOCK_INDEX = 4,    // Root Block
+-  ATTRCAT_OFFSET_INDEX = 5         // Offset
++enum AttrCatFieldIndex
++{
++  ATTRCAT_REL_NAME_INDEX = 0,     // Relation Name
++  ATTRCAT_ATTR_NAME_INDEX = 1,    // Attribute Name
++  ATTRCAT_ATTR_TYPE_INDEX = 2,    // Attribute Type
++  ATTRCAT_PRIMARY_FLAG_INDEX = 3, // Primary Flag
++  ATTRCAT_ROOT_BLOCK_INDEX = 4,   // Root Block
++  ATTRCAT_OFFSET_INDEX = 5        // Offset
+ };
+ 
+-enum ReturnTypes {
++enum ReturnTypes
++{
+   SUCCESS = 0,
+   FAILURE = -1,
+   EXIT = -100,
+-  E_OUTOFBOUND,             // Out of bound
+-  E_FREESLOT,               // Free slot
+-  E_NOINDEX,                // No index
+-  E_DISKFULL,               // Insufficient space in Disk
+-  E_INVALIDBLOCK,           // Invalid block
+-  E_RELNOTEXIST,            // Relation does not exist
+-  E_RELEXIST,               // Relation already exists
+-  E_ATTRNOTEXIST,           // Attribute does not exist
+-  E_ATTREXIST,              // Attribute already exists
+-  E_CACHEFULL,              // Cache is full
+-  E_RELNOTOPEN,             // Relation is not open
+-  E_NATTRMISMATCH,          // Mismatch in number of attributes
+-  E_DUPLICATEATTR,          // Duplicate attributes found
+-  E_RELOPEN,                // Relation is open
+-  E_ATTRTYPEMISMATCH,       // Mismatch in attribute type
+-  E_INVALID,                // Invalid index or argument
+-  E_MAXRELATIONS,           // Maximum number of relations already present
+-  E_MAXATTRS,               // Maximum number of attributes allowed for a relation is 125
+-  E_NOTPERMITTED,           // Operation not permitted
+-  E_NOTFOUND,               // Search for requested record unsuccessful
+-  E_BLOCKNOTINBUFFER,       // Block not found in buffer
+-  E_INDEX_BLOCKS_RELEASED,  // Due to insufficient disk space, index blocks have been released from the disk
++  E_OUTOFBOUND,            // Out of bound
++  E_FREESLOT,              // Free slot
++  E_NOINDEX,               // No index
++  E_DISKFULL,              // Insufficient space in Disk
++  E_INVALIDBLOCK,          // Invalid block
++  E_RELNOTEXIST,           // Relation does not exist
++  E_RELEXIST,              // Relation already exists
++  E_ATTRNOTEXIST,          // Attribute does not exist
++  E_ATTREXIST,             // Attribute already exists
++  E_CACHEFULL,             // Cache is full
++  E_RELNOTOPEN,            // Relation is not open
++  E_NATTRMISMATCH,         // Mismatch in number of attributes
++  E_DUPLICATEATTR,         // Duplicate attributes found
++  E_RELOPEN,               // Relation is open
++  E_ATTRTYPEMISMATCH,      // Mismatch in attribute type
++  E_INVALID,               // Invalid index or argument
++  E_MAXRELATIONS,          // Maximum number of relations already present
++  E_MAXATTRS,              // Maximum number of attributes allowed for a relation is 125
++  E_NOTPERMITTED,          // Operation not permitted
++  E_NOTFOUND,              // Search for requested record unsuccessful
++  E_BLOCKNOTINBUFFER,      // Block not found in buffer
++  E_INDEX_BLOCKS_RELEASED, // Due to insufficient disk space, index blocks have been released from the disk
+ };
+ 
+-#define TEMP ".temp"  // Used for internal purposes
++#define TEMP ".temp" // Used for internal purposes
+ 
+ // Global variables for B+ Tree Layer
+-#define MAX_KEYS_INTERNAL 100     // Maximum number of keys allowed in an Internal Node of a B+ tree
+-#define MIDDLE_INDEX_INTERNAL 50  // Index of the middle element in an Internal Node of a B+ tree
+-#define MAX_KEYS_LEAF 63          // Maximum number of keys allowed in a Leaf Node of a B+ tree
+-#define MIDDLE_INDEX_LEAF 31      // Index of the middle element in a Leaf Node of a B+ tree
++#define MAX_KEYS_INTERNAL 100    // Maximum number of keys allowed in an Internal Node of a B+ tree
++#define MIDDLE_INDEX_INTERNAL 50 // Index of the middle element in an Internal Node of a B+ tree
++#define MAX_KEYS_LEAF 63         // Maximum number of keys allowed in a Leaf Node of a B+ tree
++#define MIDDLE_INDEX_LEAF 31     // Index of the middle element in a Leaf Node of a B+ tree
+ 
+ // Name strings for Relation Catalog and Attribute Catalog (as it is stored in the Relation catalog)
+ #define RELCAT_RELNAME "RELATIONCAT"
+@@ -149,4 +159,4 @@ enum ReturnTypes {
+ #define ATTRCAT_ATTR_ROOT_BLOCK "RootBlock"
+ #define ATTRCAT_ATTR_OFFSET "Offset"
+ 
+-#endif  // NITCBASE_CONSTANTS_H
+\ No newline at end of file
++#endif // NITCBASE_CONSTANTS_H
+\ No newline at end of file
+diff --git a/mynitcbase/main.cpp b/mynitcbase/main.cpp
+index 46bcbb4..5c88342 100644
+--- a/mynitcbase/main.cpp
++++ b/mynitcbase/main.cpp
+@@ -14,49 +14,5 @@ int main(int argc, char *argv[])
+   StaticBuffer buffer;
+   OpenRelTable cache;
+ 
+-  /*
+-  for i = 0 and i = 1 (i.e RELCAT_RELID and ATTRCAT_RELID)
+-
+-      get the relation catalog entry using RelCacheTable::getRelCatEntry()
+-      printf("Relation: %s\n", relname);
+-
+-      for j = 0 to numAttrs of the relation - 1
+-          get the attribute catalog entry for (rel-id i, attribute offset j)
+-           in attrCatEntry using AttrCacheTable::getAttrCatEntry()
+-
+-          printf("  %s: %s\n", attrName, attrType);
+-  */
+-  // RelCatEntry *relCatBuf = new RelCatEntry();
+-  // RelCacheTable::getRelCatEntry(RELCAT_RELID, relCatBuf);
+-  // cout << "Relation: " << relCatBuf->relName << endl;
+-
+-  // for (int j = 0; j < relCatBuf->numAttrs; j++)
+-  // {
+-  //   AttrCatEntry *attrCatBuf = new AttrCatEntry();
+-  //   AttrCacheTable::getAttrCatEntry(RELCAT_RELID, j, attrCatBuf);
+-  //   cout << "  " << attrCatBuf->attrName << ": " << attrCatBuf->attrType << endl;
+-  // }
+-
+-  // RelCacheTable::getRelCatEntry(ATTRCAT_RELID, relCatBuf);
+-  // cout << "Relation: " << relCatBuf->relName << endl;
+-
+-  // for (int j = 0; j < relCatBuf->numAttrs; j++)
+-  // {
+-  //   AttrCatEntry *attrCatBuf = new AttrCatEntry();
+-  //   AttrCacheTable::getAttrCatEntry(ATTRCAT_RELID, j, attrCatBuf);
+-  //   cout << "  " << attrCatBuf->attrName << ": " << attrCatBuf->attrType << endl;
+-  // }
+-
+-  // RelCacheTable::getRelCatEntry(2, relCatBuf);
+-  // cout << "Relation: " << relCatBuf->relName << endl;
+-
+-  // for (int j = 0; j < relCatBuf->numAttrs; j++)
+-  // {
+-  //   AttrCatEntry *attrCatBuf = new AttrCatEntry();
+-  //   AttrCacheTable::getAttrCatEntry(2, j, attrCatBuf);
+-  //   cout << "  " << attrCatBuf->attrName << ": " << attrCatBuf->attrType << endl;
+-  // }
+-
+-  // return 0;
+   return FrontendInterface::handleFrontend(argc, argv);
+ }
+\ No newline at end of file
