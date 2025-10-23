@@ -127,11 +127,11 @@ int Frontend::select_attrlist_from_join_where(
 {
 
   char relname_temp[ATTR_SIZE] = TEMP;
-
+  
   int ret = Algebra::join(relname_source_one, relname_source_two, relname_temp, join_attr_one, join_attr_two);
   if (ret != SUCCESS)
-    return ret;
-
+  return ret;
+  
   int tempRelId = OpenRelTable::openRel(relname_temp);
   if (tempRelId < 0 || tempRelId >= MAX_OPEN)
   {

@@ -427,9 +427,9 @@ void BlockBuffer::releaseBlock()
 
 int compareAttrs(union Attribute attr1, union Attribute attr2, int attrType)
 {
-    static int cou=0;
-    cou++;
-    cout<<cou<<endl;
+    // static int cou=0;
+    // cou++;
+    // cout<<cou<<endl;
 
     double diff;
     if (attrType == STRING)
