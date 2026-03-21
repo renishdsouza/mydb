@@ -331,6 +331,7 @@ async function tryLoadWasmRuntime() {
     }
 
     wasmModule = await window.createNitcbaseModule({
+      locateFile: (path) => `${assetBasePath}${path}`,
       print: (text) => {
         const msg = String(text || "").trim();
         if (msg) print(msg);
