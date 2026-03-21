@@ -8,17 +8,42 @@ const jumpButtons = Array.from(document.querySelectorAll("[data-tab-target]"));
 const commandInput = document.getElementById("commandInput");
 const runBtn = document.getElementById("runBtn");
 const seedBtn = document.getElementById("seedBtn");
+const demoBtn = document.getElementById("demoBtn");
 const resetBtn = document.getElementById("resetBtn");
 const exportBtn = document.getElementById("exportBtn");
 const importInput = document.getElementById("importInput");
 const consoleOutput = document.getElementById("consoleOutput");
 const stateSummary = document.getElementById("stateSummary");
+const engineBadge = document.getElementById("engineBadge");
 
 let wasmModule = null;
 let wasmReady = false;
 let wasmExecute = null;
 let wasmInit = null;
 let wasmShutdown = null;
+
+const showcaseCommands = [
+  "DROP TABLE Combined;",
+  "DROP TABLE HighCGPA;",
+  "DROP TABLE Toppers;",
+  "DROP TABLE NameList;",
+  "DROP TABLE StudentsCopy;",
+  "DROP TABLE Marks;",
+  "DROP TABLE Students;",
+  "CREATE TABLE Students (id NUM, name STR, cgpa NUM);",
+  "INSERT INTO Students VALUES (1, Asha, 9.4);",
+  "INSERT INTO Students VALUES (2, Ravi, 8.7);",
+  "INSERT INTO Students VALUES (3, Nina, 9.1);",
+  "CREATE TABLE Marks (id NUM, score NUM);",
+  "INSERT INTO Marks VALUES (1, 95);",
+  "INSERT INTO Marks VALUES (2, 84);",
+  "INSERT INTO Marks VALUES (3, 90);",
+  "SELECT * FROM Students INTO StudentsCopy;",
+  "SELECT id, name FROM Students INTO NameList;",
+  "SELECT * FROM Students INTO Toppers WHERE cgpa >= 9.0;",
+  "SELECT name FROM Students INTO HighCGPA WHERE cgpa > 8.5;",
+  "SELECT * FROM Students JOIN Marks INTO Combined WHERE Students.id = Marks.id;",
+];
 
 const defaultState = () => ({
   metadata: {
@@ -46,6 +71,20 @@ function setActiveTab(tabId) {
   tabPanels.forEach((panel) => {
     panel.classList.toggle("active", panel.id === tabId);
   });
+}
+
+function setEngineBadge(mode) {
+  if (!engineBadge) return;
+
+  engineBadge.classList.remove("wasm", "fallback");
+  if (mode === "wasm") {
+    engineBadge.classList.add("wasm");
+    engineBadge.textContent = "Engine: WASM native core active";
+    return;
+  }
+
+  engineBadge.classList.add("fallback");
+  engineBadge.textContent = "Engine: JS fallback mode";
 }
 
 function print(msg, tone = "info") {
@@ -179,14 +218,35 @@ async function tryLoadWasmRuntime() {
     }
 
     wasmReady = true;
+    setEngineBadge("wasm");
     renderState();
     print("WASM engine ready: native C++ core is active", "success");
     return true;
   } catch (err) {
     wasmReady = false;
+    setEngineBadge("fallback");
     print(`WASM unavailable, using JS fallback: ${err.message}`, "error");
     return false;
   }
+}
+
+function runSingleCommand(raw) {
+  if (!raw.trim()) return 0;
+
+  if (wasmReady && wasmExecute) {
+    const ret = wasmExecute(raw);
+    if (ret === 0 || ret === -100) {
+      print(`Return code: ${ret}`, "success");
+    } else {
+      print(`Return code: ${ret}`, "error");
+    }
+    return ret;
+  }
+
+  execute(raw);
+  saveState().catch((err) => print(`Persistence warning: ${err.message}`, "error"));
+  renderState();
+  return 0;
 }
 
 async function openDb() {
@@ -499,23 +559,29 @@ function runCommand() {
   const raw = commandInput.value;
   if (!raw.trim()) return;
 
-  if (wasmReady && wasmExecute) {
-    const ret = wasmExecute(raw);
-    if (ret === 0 || ret === -100) {
-      print(`Return code: ${ret}`, "success");
-    } else {
-      print(`Return code: ${ret}`, "error");
-    }
-    return;
-  }
-
   try {
-    execute(raw);
-    saveState().catch((err) => print(`Persistence warning: ${err.message}`, "error"));
-    renderState();
+    runSingleCommand(raw);
   } catch (err) {
     print(`Error: ${err.message}`, "error");
   }
+}
+
+async function runShowcaseDemo() {
+  setActiveTab("playground");
+  print("Starting showcase demo sequence", "success");
+
+  for (const cmd of showcaseCommands) {
+    commandInput.value = cmd;
+    try {
+      runSingleCommand(cmd);
+    } catch (err) {
+      print(`Demo step failed for command: ${cmd}`, "error");
+      print(`Reason: ${err.message}`, "error");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
+
+  print("Showcase demo finished", "success");
 }
 
 function seedSampleData() {
@@ -644,6 +710,7 @@ jumpButtons.forEach((btn) => {
 
 runBtn.addEventListener("click", runCommand);
 seedBtn.addEventListener("click", seedSampleData);
+demoBtn.addEventListener("click", runShowcaseDemo);
 resetBtn.addEventListener("click", resetState);
 exportBtn.addEventListener("click", exportSnapshot);
 
@@ -661,6 +728,7 @@ commandInput.addEventListener("keydown", (event) => {
 
 (async function init() {
   try {
+    setEngineBadge("fallback");
     await loadState();
     print("Virtual disk loaded from IndexedDB", "success");
     await tryLoadWasmRuntime();
