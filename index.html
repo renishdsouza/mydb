@@ -172,13 +172,13 @@ WHERE Students.id = Marks.id;</code></pre>
           <li>Build WASM artifacts by running ./wasm/build_wasm.sh from repository root.</li>
           <li>Push this repository to GitHub.</li>
           <li>Open repository Settings, then Pages.</li>
-          <li>Set Source to Deploy from a branch.</li>
-          <li>Select branch main and folder web or root based on your publish strategy.</li>
-          <li>Save, then open the generated github.io URL.</li>
+          <li>Set Source to GitHub Actions.</li>
+          <li>Wait for the Deploy Web To GitHub Pages workflow to finish in Actions.</li>
+          <li>Open the generated URL at https://username.github.io/repository/.</li>
         </ol>
         <p>
-          If you publish from root, keep this site under the web folder and configure Pages to use
-          that folder.
+          This repository publishes root index.html plus web assets automatically, so /web is not
+          needed in the final URL.
         </p>
       </section>
     </main>

@@ -35,12 +35,19 @@ This generates these files inside `web/`:
 
 ## Deploy
 
+This repository is configured with a GitHub Actions workflow that publishes:
+
+- root `index.html`
+- all assets from `web/`
+
+Steps:
+
 1. Push repository to GitHub.
 2. Go to repository settings.
 3. Open Pages.
-4. Choose deploy from branch.
-5. Select branch `main` and folder `web`.
-6. Save and open the generated URL.
+4. Set Source to `GitHub Actions`.
+5. Wait for workflow `Deploy Web To GitHub Pages` to complete.
+6. Open `https://<username>.github.io/<repository>/`.
 
 ## Notes
 
