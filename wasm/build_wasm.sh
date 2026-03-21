@@ -31,7 +31,7 @@ COMMON_ARGS=(
   -s EXPORT_NAME=createNitcbaseModule
   -s ENVIRONMENT=web,worker
   -s FORCE_FILESYSTEM=1
-  -s EXPORTED_FUNCTIONS=["_nitc_init","_nitc_execute","_nitc_shutdown"]
+  -s EXPORTED_FUNCTIONS=["_nitc_init","_nitc_execute","_nitc_shutdown","_nitc_print_relation"]
   -s EXPORTED_RUNTIME_METHODS=["ccall","cwrap"]
   --preload-file "$ROOT_DIR/Disk@/Disk"
   --preload-file "$ROOT_DIR/Files@/Files"
@@ -74,7 +74,7 @@ else
     -s EXPORT_NAME=createNitcbaseModule \
     -s ENVIRONMENT=web,worker \
     -s FORCE_FILESYSTEM=1 \
-    -s EXPORTED_FUNCTIONS='["_nitc_init","_nitc_execute","_nitc_shutdown"]' \
+    -s EXPORTED_FUNCTIONS='["_nitc_init","_nitc_execute","_nitc_shutdown","_nitc_print_relation"]' \
     -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
     --preload-file /src/Disk@/Disk \
     --preload-file /src/Files@/Files \

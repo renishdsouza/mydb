@@ -21,6 +21,8 @@ let wasmReady = false;
 let wasmExecute = null;
 let wasmInit = null;
 let wasmShutdown = null;
+let wasmPrintRelation = null;
+let previewCounter = 0;
 
 const showcaseCommands = [
   "CLOSE TABLE Combined;",
@@ -116,6 +118,110 @@ function normalizeValue(raw) {
     return Number(value);
   }
   return value;
+}
+
+function normalizeSql(raw) {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return "";
+  return trimmed.endsWith(";") ? trimmed.slice(0, -1).trim() : trimmed;
+}
+
+function makePreviewRelationName() {
+  const suffix = (previewCounter++).toString(36).toUpperCase();
+  return `WOUT_${suffix}`.slice(0, 15);
+}
+
+function buildDisplaySelectPlan(raw) {
+  const sql = normalizeSql(raw);
+  if (!/^SELECT\b/i.test(sql)) {
+    return null;
+  }
+
+  const intoMatch = sql.match(/\bINTO\s+([A-Za-z0-9_-]+)\b/i);
+  const hasInto = Boolean(intoMatch);
+  if (hasInto && !/^NULL$/i.test(intoMatch[1])) {
+    return null;
+  }
+
+  const tempRelation = makePreviewRelationName();
+  if (hasInto) {
+    const rewrittenSql = sql.replace(/\bINTO\s+NULL\b/i, `INTO ${tempRelation}`);
+    return { rewrittenSql, tempRelation };
+  }
+
+  let m = sql.match(/^SELECT\s+(.+)\s+FROM\s+([A-Za-z0-9_-]+)\s+JOIN\s+([A-Za-z0-9_-]+)\s+WHERE\s+(.+)$/i);
+  if (m) {
+    return {
+      rewrittenSql: `SELECT ${m[1]} FROM ${m[2]} JOIN ${m[3]} INTO ${tempRelation} WHERE ${m[4]}`,
+      tempRelation,
+    };
+  }
+
+  m = sql.match(/^SELECT\s+(.+)\s+FROM\s+([A-Za-z0-9_-]+)\s+WHERE\s+(.+)$/i);
+  if (m && !/\bJOIN\b/i.test(sql)) {
+    return {
+      rewrittenSql: `SELECT ${m[1]} FROM ${m[2]} INTO ${tempRelation} WHERE ${m[3]}`,
+      tempRelation,
+    };
+  }
+
+  m = sql.match(/^SELECT\s+(.+)\s+FROM\s+([A-Za-z0-9_-]+)$/i);
+  if (m && !/\bJOIN\b/i.test(sql)) {
+    return {
+      rewrittenSql: `SELECT ${m[1]} FROM ${m[2]} INTO ${tempRelation}`,
+      tempRelation,
+    };
+  }
+
+  return null;
+}
+
+function printRows(columns, rows) {
+  print(columns.map((column) => column.name).join(" | "));
+  rows.forEach((row) => {
+    print(row.map((value) => String(value)).join(" | "));
+  });
+  print(`(${rows.length} row(s))`, "success");
+}
+
+function cleanupPreviewRelationFallback(name) {
+  if (state.tables[name]) {
+    delete state.tables[name];
+    updateCatalogs();
+  }
+}
+
+function runDisplaySelectFallback(plan) {
+  execute(`${plan.rewrittenSql};`);
+  const table = ensureTable(plan.tempRelation);
+  printRows(table.columns, table.rows);
+  cleanupPreviewRelationFallback(plan.tempRelation);
+}
+
+function runDisplaySelectWasm(plan) {
+  if (!wasmExecute) {
+    return -1;
+  }
+
+  wasmExecute(`CLOSE TABLE ${plan.tempRelation};`);
+  wasmExecute(`DROP TABLE ${plan.tempRelation};`);
+
+  const selectRet = wasmExecute(`${plan.rewrittenSql};`);
+  if (selectRet !== 0) {
+    return selectRet;
+  }
+
+  if (!wasmPrintRelation) {
+    print("Error: This WASM build does not support displaying query rows yet", "error");
+    return -1;
+  }
+
+  const printRet = wasmPrintRelation(plan.tempRelation);
+
+  wasmExecute(`CLOSE TABLE ${plan.tempRelation};`);
+  wasmExecute(`DROP TABLE ${plan.tempRelation};`);
+
+  return printRet;
 }
 
 function toType(value) {
@@ -220,6 +326,7 @@ async function tryLoadWasmRuntime() {
     wasmInit = wasmModule.cwrap("nitc_init", "number", []);
     wasmExecute = wasmModule.cwrap("nitc_execute", "number", ["string"]);
     wasmShutdown = wasmModule.cwrap("nitc_shutdown", "number", []);
+    wasmPrintRelation = wasmModule.cwrap("nitc_print_relation", "number", ["string"]);
 
     const ret = wasmInit();
     if (ret !== 0) {
@@ -242,8 +349,10 @@ async function tryLoadWasmRuntime() {
 function runSingleCommand(raw) {
   if (!raw.trim()) return 0;
 
+  const displayPlan = buildDisplaySelectPlan(raw);
+
   if (wasmReady && wasmExecute) {
-    const ret = wasmExecute(raw);
+    const ret = displayPlan ? runDisplaySelectWasm(displayPlan) : wasmExecute(raw);
     if (ret === 0 || ret === -100) {
       print(`Return code: ${ret}`, "success");
     } else {
@@ -252,7 +361,11 @@ function runSingleCommand(raw) {
     return ret;
   }
 
-  execute(raw);
+  if (displayPlan) {
+    runDisplaySelectFallback(displayPlan);
+  } else {
+    execute(raw);
+  }
   saveState().catch((err) => print(`Persistence warning: ${err.message}`, "error"));
   renderState();
   return 0;
