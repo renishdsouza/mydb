@@ -23,6 +23,13 @@ let wasmInit = null;
 let wasmShutdown = null;
 
 const showcaseCommands = [
+  "CLOSE TABLE Combined;",
+  "CLOSE TABLE HighCGPA;",
+  "CLOSE TABLE Toppers;",
+  "CLOSE TABLE NameList;",
+  "CLOSE TABLE StudentsCopy;",
+  "CLOSE TABLE Marks;",
+  "CLOSE TABLE Students;",
   "DROP TABLE Combined;",
   "DROP TABLE HighCGPA;",
   "DROP TABLE Toppers;",
@@ -31,10 +38,12 @@ const showcaseCommands = [
   "DROP TABLE Marks;",
   "DROP TABLE Students;",
   "CREATE TABLE Students (id NUM, name STR, cgpa NUM);",
+  "OPEN TABLE Students;",
   "INSERT INTO Students VALUES (1, Asha, 9.4);",
   "INSERT INTO Students VALUES (2, Ravi, 8.7);",
   "INSERT INTO Students VALUES (3, Nina, 9.1);",
   "CREATE TABLE Marks (id NUM, score NUM);",
+  "OPEN TABLE Marks;",
   "INSERT INTO Marks VALUES (1, 95);",
   "INSERT INTO Marks VALUES (2, 84);",
   "INSERT INTO Marks VALUES (3, 90);",
@@ -588,21 +597,29 @@ function seedSampleData() {
   if (wasmReady && wasmExecute) {
     const commands = [
       "CREATE TABLE Students (id NUM, name STR, cgpa NUM);",
+      "OPEN TABLE Students;",
       "INSERT INTO Students VALUES (1, Asha, 9.4);",
       "INSERT INTO Students VALUES (2, Ravi, 8.7);",
       "INSERT INTO Students VALUES (3, Nina, 9.1);",
       "CREATE TABLE Marks (id NUM, score NUM);",
+      "OPEN TABLE Marks;",
       "INSERT INTO Marks VALUES (1, 95);",
       "INSERT INTO Marks VALUES (2, 84);",
       "INSERT INTO Marks VALUES (3, 90);",
     ];
+    let failures = 0;
     commands.forEach((cmd) => {
       const ret = wasmExecute(cmd);
       if (ret !== 0) {
+        failures += 1;
         print(`Seed command failed (${ret}): ${cmd}`, "error");
       }
     });
-    print("Sample data loaded in WASM runtime", "success");
+    if (failures === 0) {
+      print("Sample data loaded in WASM runtime", "success");
+    } else {
+      print(`Sample data finished with ${failures} failed command(s) in WASM runtime`, "error");
+    }
     return;
   }
 
