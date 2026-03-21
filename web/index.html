@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="NITCbase browser documentation and playground with virtual disk persistence"
+    />
+    <title>NITCbase Web Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="bg-grid" aria-hidden="true"></div>
+    <header class="hero">
+      <p class="tag">NITCbase Project Portal</p>
+      <h1>NITCbase in the Browser</h1>
+      <div id="engineBadge" class="engine-badge">Engine: initializing</div>
+      <p>
+        Documentation, architecture mapping, and a browser-safe execution sandbox powered by a
+        virtual disk layer.
+      </p>
+      <div class="hero-actions">
+        <button class="btn" data-tab-target="playground">Open Playground</button>
+        <button class="btn ghost" data-tab-target="deploy">Deploy to GitHub Pages</button>
+      </div>
+    </header>
+
+    <main class="shell">
+      <nav class="tabs" aria-label="Primary sections">
+        <button class="tab active" data-tab="overview">Overview</button>
+        <button class="tab" data-tab="architecture">Architecture</button>
+        <button class="tab" data-tab="commands">Command Reference</button>
+        <button class="tab" data-tab="playground">Playground</button>
+        <button class="tab" data-tab="deploy">Deploy</button>
+      </nav>
+
+      <section id="overview" class="panel active">
+        <h2>Project Summary</h2>
+        <p>
+          This site is a complete web companion for your NITCbase codebase. It does not edit or run
+          the native disk files used by the C++ implementation. Instead, it uses an in-browser
+          virtual disk snapshot, persisted with IndexedDB, so users can test workflows safely.
+        </p>
+        <div class="cards">
+          <article class="card">
+            <h3>Core Modules</h3>
+            <ul>
+              <li>FrontendInterface: parses SQL-like commands</li>
+              <li>Schema: relation and attribute catalog management</li>
+              <li>Algebra: select, project, join and insert logic</li>
+              <li>BPlusTree: index creation, search and split operations</li>
+              <li>Buffer and Disk: block IO and persistence behavior</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>Disk Model in Native Build</h3>
+            <ul>
+              <li>Disk size: 16 MB</li>
+              <li>Block size: 2048 bytes</li>
+              <li>Total blocks: 8192</li>
+              <li>Runtime copy model: disk to disk_run_copy on start, reverse on graceful exit</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>Browser Workaround</h3>
+            <ul>
+              <li>Virtual disk image in IndexedDB, never writes host disk files</li>
+              <li>Serializable state export or import for sharing sessions</li>
+              <li>Subset SQL runtime supports CREATE, INSERT, SELECT, JOIN and schema updates</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section id="architecture" class="panel">
+        <h2>Architecture Mapping</h2>
+        <p>The diagram maps the native C++ layers and the browser sandbox adaptation.</p>
+        <div class="arch-grid">
+          <article class="arch-card">
+            <h3>Native Pipeline</h3>
+            <ol>
+              <li>FrontendInterface::handleFrontend</li>
+              <li>Frontend APIs route commands to Schema and Algebra</li>
+              <li>Schema and Algebra call BlockAccess and BPlusTree</li>
+              <li>Buffer mediates Disk::readBlock and Disk::writeBlock</li>
+              <li>Disk constructor and destructor copy session state</li>
+            </ol>
+          </article>
+          <article class="arch-card accent">
+            <h3>Browser Pipeline</h3>
+            <ol>
+              <li>Command parser reads SQL-like text from console</li>
+              <li>JS execution engine updates table metadata and rows</li>
+              <li>IndexedDB stores virtual disk snapshot and op-log</li>
+              <li>No direct file rewrite calls to local machine filesystem</li>
+              <li>Optional snapshot download for backup or report attachment</li>
+            </ol>
+          </article>
+        </div>
+      </section>
+
+      <section id="commands" class="panel">
+        <h2>Command Reference</h2>
+        <p>The playground follows command styles from your RegexHandler definitions.</p>
+        <div class="cards two">
+          <article class="card">
+            <h3>DDL</h3>
+            <pre><code>CREATE TABLE Students (id NUM, name STR, cgpa NUM);
+OPEN TABLE Students;
+CLOSE TABLE Students;
+ALTER TABLE RENAME Students TO Learners;
+ALTER TABLE RENAME Learners COLUMN cgpa TO gpa;
+CREATE INDEX ON Learners.id;
+DROP INDEX ON Learners.id;
+DROP TABLE Learners;</code></pre>
+          </article>
+          <article class="card">
+            <h3>DML</h3>
+            <pre><code>INSERT INTO Students VALUES (1, Alice, 9.2);
+SELECT * FROM Students INTO StudentsCopy;
+SELECT id, name FROM Students INTO NameList;
+SELECT * FROM Students INTO Toppers WHERE cgpa >= 9.0;
+SELECT name FROM Students INTO HighCGPA WHERE cgpa > 8.5;
+SELECT * FROM Students JOIN Marks INTO Combined
+WHERE Students.id = Marks.id;</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section id="playground" class="panel">
+        <h2>Browser Playground</h2>
+        <p>
+          Run SQL-like commands in this sandbox. If WebAssembly artifacts are present, commands run
+          through the native C++ engine. Otherwise, the app uses a JS fallback runtime.
+        </p>
+
+        <div class="playground-layout">
+          <div class="console-wrap">
+            <label for="commandInput">Command</label>
+            <textarea id="commandInput" rows="5" placeholder="Type one command ending with semicolon"></textarea>
+            <div class="row">
+              <button id="runBtn" class="btn">Run Command</button>
+              <button id="seedBtn" class="btn ghost">Load Sample Data</button>
+              <button id="demoBtn" class="btn ghost">Run Showcase Demo</button>
+              <button id="resetBtn" class="btn warn">Reset Virtual Disk</button>
+            </div>
+            <div id="consoleOutput" class="output" aria-live="polite"></div>
+          </div>
+
+          <aside class="state-wrap">
+            <h3>Virtual Disk State</h3>
+            <div id="stateSummary" class="state-box"></div>
+            <div class="row compact">
+              <button id="exportBtn" class="btn ghost">Export Snapshot</button>
+              <label class="file-label" for="importInput">Import Snapshot</label>
+              <input id="importInput" type="file" accept="application/json" />
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="deploy" class="panel">
+        <h2>GitHub Pages Deployment</h2>
+        <ol>
+          <li>Build WASM artifacts by running ./wasm/build_wasm.sh from repository root.</li>
+          <li>Push this repository to GitHub.</li>
+          <li>Open repository Settings, then Pages.</li>
+          <li>Set Source to Deploy from a branch.</li>
+          <li>Select branch main and folder web or root based on your publish strategy.</li>
+          <li>Save, then open the generated github.io URL.</li>
+        </ol>
+        <p>
+          If you publish from root, keep this site under the web folder and configure Pages to use
+          that folder.
+        </p>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
