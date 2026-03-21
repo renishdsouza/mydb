@@ -16,6 +16,24 @@ const consoleOutput = document.getElementById("consoleOutput");
 const stateSummary = document.getElementById("stateSummary");
 const engineBadge = document.getElementById("engineBadge");
 
+function getAssetBasePath() {
+  const scripts = Array.from(document.querySelectorAll("script[src]"));
+  const appScript = scripts.find((script) => {
+    const src = script.getAttribute("src") || "";
+    return /(?:^|\/)app\.js(?:\?|#|$)/.test(src);
+  });
+
+  if (!appScript) {
+    return "";
+  }
+
+  const resolvedSrc = new URL(appScript.getAttribute("src"), window.location.href);
+  const dir = resolvedSrc.href.substring(0, resolvedSrc.href.lastIndexOf("/") + 1);
+  return dir;
+}
+
+const assetBasePath = getAssetBasePath();
+
 let wasmModule = null;
 let wasmReady = false;
 let wasmExecute = null;
@@ -307,7 +325,7 @@ function loadScript(src) {
 
 async function tryLoadWasmRuntime() {
   try {
-    await loadScript("nitcbase.js");
+    await loadScript(`${assetBasePath}nitcbase.js`);
     if (typeof window.createNitcbaseModule !== "function") {
       throw new Error("createNitcbaseModule not available");
     }

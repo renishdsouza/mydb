@@ -6,6 +6,7 @@ on:
       - main
       - wass
     paths:
+      - index.html
       - web/**
       - .github/workflows/deploy-pages.yml
   workflow_dispatch:
@@ -32,10 +33,17 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
+      - name: Prepare publish directory
+        run: |
+          mkdir -p _site/web
+          cp index.html _site/index.html
+          cp -r web/* _site/web/
+          touch _site/.nojekyll
+
       - name: Upload web artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./web
+          path: ./_site
 
       - name: Deploy to GitHub Pages
         id: deployment
